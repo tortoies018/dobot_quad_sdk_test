@@ -1,0 +1,40 @@
+# Byte-compiled
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# Build
+build/
+*.egg
+
+# DDS / CycloneDDS local artifacts
+cyclonedds.log
+dds_middleware_project/build/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Generated proto files (regenerated on build)
+dobot_quad_sdk/high_level/python/dobot_quad/proto/*_pb2.py
+dobot_quad_sdk/high_level/python/dobot_quad/proto/*_pb2_grpc.py
+
+# C++ build artifacts
+dobot_quad_sdk/high_level/cpp/build/
+dobot_quad_sdk/low_level/cpp/build/
+
+# Python cache
+.pytest_cache/
+*.egg-info/
+
+# Embedded SDK (external git repo)
+dobot_quad_sdk/
+
+# Stray artifact
+=4.25.0

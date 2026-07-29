@@ -1,0 +1,19 @@
+domain_id: 0
+default_writer_qos:
+  reliability: reliable
+  history_kind: keep_last
+  history_depth: 10
+  durability: volatile
+  liveliness: automatic
+  deadline: infinite
+  # deadline_period: 100ms  # 当 deadline 为有限值时使用，支持单位：ns、ms、s
+  # liveliness_lease_duration: 1s  # 租约持续时间
+default_reader_qos:
+  reliability: best_effort
+  history_kind: keep_last
+  history_depth: 10
+  durability: volatile
+  liveliness: automatic
+  deadline: infinite
+  # deadline_period: 100ms
+  # liveliness_lease_duration: 1s
