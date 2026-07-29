@@ -31,7 +31,6 @@ class Ui_DataPanel(object):
         self.groupInfo.setStyleSheet(u"QGroupBox { font: bold 14px; color: #0af; border: 1px solid #333; border-radius: 6px; margin-top: 12px; padding-top: 16px; background: #252525; } QGroupBox::title { subcontrol-origin: margin; left: 12px; padding: 0 6px; }")
         self.infoGrid = QGridLayout(self.groupInfo)
         self.infoGrid.setObjectName(u"infoGrid")
-        self.infoGrid.setColumnMinimumWidth(0)
         self.lblRobotTypeTitle = QLabel(self.groupInfo)
         self.lblRobotTypeTitle.setObjectName(u"lblRobotTypeTitle")
         self.lblRobotTypeTitle.setStyleSheet(u"color: #888; font: 12px;")
