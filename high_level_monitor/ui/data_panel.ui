@@ -1,0 +1,108 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>DataPanel</class>
+ <widget class="QWidget" name="DataPanel">
+  <layout class="QVBoxLayout" name="rootLayout">
+   <property name="spacing">
+    <number>6</number>
+   </property>
+   <property name="leftMargin">
+    <number>6</number>
+   </property>
+   <property name="topMargin">
+    <number>6</number>
+   </property>
+   <property name="rightMargin">
+    <number>6</number>
+   </property>
+   <property name="bottomMargin">
+    <number>6</number>
+   </property>
+
+   <!-- 基本信息 -->
+   <item>
+    <widget class="QGroupBox" name="groupInfo">
+     <property name="title">
+      <string>基本信息</string>
+     </property>
+     <property name="styleSheet">
+      <string notr="true">QGroupBox { font: bold 14px; color: #0af; border: 1px solid #333; border-radius: 6px; margin-top: 12px; padding-top: 16px; background: #252525; } QGroupBox::title { subcontrol-origin: margin; left: 12px; padding: 0 6px; }</string>
+     </property>
+     <layout class="QGridLayout" name="infoGrid">
+      <property name="columnMinimumWidth">
+       <number>0</number>
+      </property>
+      <item row="0" column="0"><widget class="QLabel" name="lblRobotTypeTitle"><property name="text"><string>机器人类型</string></property><property name="styleSheet"><string notr="true">color: #888; font: 12px;</string></property></widget></item>
+      <item row="0" column="1"><widget class="QLabel" name="valRobotType"><property name="text"><string>-</string></property><property name="styleSheet"><string notr="true">color: #fff; font: bold 14px; font-family: monospace;</string></property></widget></item>
+      <item row="0" column="2"><widget class="QLabel" name="lblFSMTitle"><property name="text"><string>FSM 状态</string></property><property name="styleSheet"><string notr="true">color: #888; font: 12px;</string></property></widget></item>
+      <item row="0" column="3"><widget class="QLabel" name="valFSM"><property name="text"><string>-</string></property><property name="styleSheet"><string notr="true">color: #0f0; font: bold 14px; font-family: monospace;</string></property></widget></item>
+      <item row="1" column="0"><widget class="QLabel" name="lblSpeedTitle"><property name="text"><string>速度比</string></property><property name="styleSheet"><string notr="true">color: #888; font: 12px;</string></property></widget></item>
+      <item row="1" column="1"><widget class="QLabel" name="valSpeed"><property name="text"><string>-</string></property><property name="styleSheet"><string notr="true">color: #fff; font: bold 14px; font-family: monospace;</string></property></widget></item>
+      <item row="1" column="2"><widget class="QLabel" name="lblAvoidTitle"><property name="text"><string>避障</string></property><property name="styleSheet"><string notr="true">color: #888; font: 12px;</string></property></widget></item>
+      <item row="1" column="3"><widget class="QLabel" name="valAvoid"><property name="text"><string>-</string></property><property name="styleSheet"><string notr="true">font: bold 14px; font-family: monospace;</string></property></widget></item>
+     </layout>
+    </widget>
+   </item>
+
+   <!-- 机体位姿 -->
+   <item>
+    <widget class="QGroupBox" name="groupPose">
+     <property name="title">
+      <string>机体位姿</string>
+     </property>
+     <property name="styleSheet">
+      <string notr="true">QGroupBox { font: bold 14px; color: #fa0; border: 1px solid #333; border-radius: 6px; margin-top: 12px; padding-top: 16px; background: #252525; } QGroupBox::title { subcontrol-origin: margin; left: 12px; padding: 0 6px; }</string>
+     </property>
+     <layout class="QGridLayout" name="poseGrid">
+      <item row="0" column="0"><widget class="QLabel" name="lblPosTitle"><property name="text"><string>位置 (m)</string></property><property name="styleSheet"><string notr="true">color: #888; font: 12px;</string></property></widget></item>
+      <item row="0" column="1"><widget class="QLabel" name="valPos"><property name="text"><string>-</string></property><property name="styleSheet"><string notr="true">color: #fff; font: 12px monospace;</string></property></widget></item>
+      <item row="1" column="0"><widget class="QLabel" name="lblVelTitle"><property name="text"><string>线速度 (m/s)</string></property><property name="styleSheet"><string notr="true">color: #888; font: 12px;</string></property></widget></item>
+      <item row="1" column="1"><widget class="QLabel" name="valVel"><property name="text"><string>-</string></property><property name="styleSheet"><string notr="true">color: #fff; font: 12px monospace;</string></property></widget></item>
+      <item row="2" column="0"><widget class="QLabel" name="lblAccelTitle"><property name="text"><string>线加速度 (m/s²)</string></property><property name="styleSheet"><string notr="true">color: #888; font: 12px;</string></property></widget></item>
+      <item row="2" column="1"><widget class="QLabel" name="valAccel"><property name="text"><string>-</string></property><property name="styleSheet"><string notr="true">color: #fff; font: 12px monospace;</string></property></widget></item>
+      <item row="3" column="0"><widget class="QLabel" name="lblOmegaTitle"><property name="text"><string>角速度 (rad/s)</string></property><property name="styleSheet"><string notr="true">color: #888; font: 12px;</string></property></widget></item>
+      <item row="3" column="1"><widget class="QLabel" name="valOmega"><property name="text"><string>-</string></property><property name="styleSheet"><string notr="true">color: #fff; font: 12px monospace;</string></property></widget></item>
+      <item row="4" column="0"><widget class="QLabel" name="lblRPYTitle"><property name="text"><string>姿态 RPY (rad)</string></property><property name="styleSheet"><string notr="true">color: #888; font: 12px;</string></property></widget></item>
+      <item row="4" column="1"><widget class="QLabel" name="valRPY"><property name="text"><string>-</string></property><property name="styleSheet"><string notr="true">color: #fff; font: 12px monospace;</string></property></widget></item>
+     </layout>
+    </widget>
+   </item>
+
+   <!-- 关节数据 -->
+   <item>
+    <widget class="QGroupBox" name="groupJoints">
+     <property name="title">
+      <string>关节数据</string>
+     </property>
+     <property name="styleSheet">
+      <string notr="true">QGroupBox { font: bold 14px; color: #0f0; border: 1px solid #333; border-radius: 6px; margin-top: 12px; padding-top: 16px; background: #252525; } QGroupBox::title { subcontrol-origin: margin; left: 12px; padding: 0 6px; }</string>
+     </property>
+     <layout class="QVBoxLayout" name="jointListLayout"/>
+    </widget>
+   </item>
+
+   <!-- 接触力 -->
+   <item>
+    <widget class="QGroupBox" name="groupGRF">
+     <property name="title">
+      <string>足端接触力 (N)</string>
+     </property>
+     <property name="styleSheet">
+      <string notr="true">QGroupBox { font: bold 14px; color: #f0a; border: 1px solid #333; border-radius: 6px; margin-top: 12px; padding-top: 16px; background: #252525; } QGroupBox::title { subcontrol-origin: margin; left: 12px; padding: 0 6px; }</string>
+     </property>
+     <layout class="QFormLayout" name="grfLayout">
+      <item row="0" column="0"><widget class="QLabel" name="lblGRFLeft"><property name="text"><string>左脚</string></property><property name="styleSheet"><string notr="true">color: #888; font: 12px;</string></property></widget></item>
+      <item row="0" column="1"><widget class="QLabel" name="valGRFLeft"><property name="text"><string>-</string></property><property name="styleSheet"><string notr="true">color: #fff; font: 12px monospace;</string></property></widget></item>
+      <item row="1" column="0"><widget class="QLabel" name="lblGRFRight"><property name="text"><string>右脚</string></property><property name="styleSheet"><string notr="true">color: #888; font: 12px;</string></property></widget></item>
+      <item row="1" column="1"><widget class="QLabel" name="valGRFRight"><property name="text"><string>-</string></property><property name="styleSheet"><string notr="true">color: #fff; font: 12px monospace;</string></property></widget></item>
+      <item row="2" column="0"><widget class="QLabel" name="lblGRFFiltered"><property name="text"><string>滤波后垂直</string></property><property name="styleSheet"><string notr="true">color: #888; font: 12px;</string></property></widget></item>
+      <item row="2" column="1"><widget class="QLabel" name="valGRFFiltered"><property name="text"><string>-</string></property><property name="styleSheet"><string notr="true">color: #fff; font: 12px monospace;</string></property></widget></item>
+     </layout>
+    </widget>
+   </item>
+
+  </layout>
+ </widget>
+ <resources/>
+ <connections/>
+</ui>
