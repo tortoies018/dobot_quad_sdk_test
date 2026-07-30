@@ -77,13 +77,13 @@ class Viz3D(QWidget):
                                               width=2, mode='lines')
         self.view.addItem(self.orient_lines)
 
-        # 6. 轨迹线
+        # 6. 轨迹线（黄色）
         self.trail_points = np.zeros((300, 3))
         self.trail_idx = 0
         self.trail_count = 0
         trail_color = np.zeros((300, 4))
-        trail_color[:, 2] = 1.0   # 蓝色
-        trail_color[:, 3] = np.linspace(0.1, 0.8, 300)  # 透明度渐变
+        trail_color[:, :2] = 1.0   # R+G = 黄色
+        trail_color[:, 3] = np.linspace(0.1, 0.8, 300)
         self.trail = gl.GLLinePlotItem(pos=self.trail_points, color=trail_color, width=2, mode='line_strip')
         self.view.addItem(self.trail)
 

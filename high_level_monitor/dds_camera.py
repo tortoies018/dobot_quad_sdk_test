@@ -1,4 +1,4 @@
-"""DDS 相机订阅线程——通过 CycloneDDS 获取 RGB 相机画面"""
+"""DDS 四相机订阅线程——RGB + 深度，前后各二"""
 
 import time
 import numpy as np
@@ -9,56 +9,71 @@ from PySide6.QtCore import QThread, Signal
 import dds_middleware_python as dds
 
 
-CAMERA_TOPICS = [
-    ("前 RGB", "rt/camera/camera2/image_compressed"),
-    ("后 RGB", "rt/camera/camera3/image_compressed"),
+# 四个相机流：[名称, 话题, 类型]
+CAMERA_STREAMS = [
+    ("前 RGB",       "rt/camera/camera2/image_compressed", "rgb"),
+    ("前 深度",      "rt/camera/camera2/image_depth",      "depth"),
+    ("后 RGB",       "rt/camera/camera3/image_compressed", "rgb"),
+    ("后 深度",      "rt/camera/camera3/image_depth",      "depth"),
 ]
 
+QOS_BEST = {"reliability": "best_effort", "history_kind": "keep_last",
+            "history_depth": 1, "durability": "volatile"}
 
-class DDSCamera(QThread):
-    """后台线程：订阅 DDS 相机话题，发送 OpenCV 图像帧"""
 
-    frame_ready = Signal(np.ndarray)
-    camera_switched = Signal(str)
+class FourCamWorker(QThread):
+    """同时订阅四个相机流，限帧发送"""
+
+    frame_ready = Signal(int, np.ndarray)
     log_msg = Signal(str)
 
-    def __init__(self, camera_index=0, config_path="config/dds_config.yaml", parent=None):
+    def __init__(self, config_path="config/dds_config.yaml", parent=None):
         super().__init__(parent)
-        self._camera_index = camera_index
-        self._config_path = config_path
+        self._config = config_path
         self._running = True
-        self._mw = None
-
-    def switch(self, index: int):
-        """切换相机 0=前, 1=后"""
-        self._camera_index = index
-        self.camera_switched.emit(CAMERA_TOPICS[index][0])
+        self._last = [0.0, 0.0, 0.0, 0.0]
+        self._interval = 0.1
 
     def run(self):
         try:
-            self._mw = dds.PyDDSMiddleware(self._config_path)
-            self.log_msg.emit("DDS 相机中间件已初始化")
+            mw = dds.PyDDSMiddleware(self._config)
         except Exception as e:
             self.log_msg.emit(f"DDS 初始化失败: {e}")
             return
 
-        name, topic = CAMERA_TOPICS[self._camera_index]
+        for idx, (name, topic, stype) in enumerate(CAMERA_STREAMS):
+            def make_cb(i, t):
+                def cb(data):
+                    now = time.monotonic()
+                    if now - self._last[i] < self._interval:
+                        return
+                    self._last[i] = now
+                    try:
+                        if t == "rgb":
+                            arr = np.frombuffer(bytes(data.data()), dtype=np.uint8)
+                            img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+                            if img is not None:
+                                self.frame_ready.emit(i, img)
+                        else:
+                            if "16UC1" not in data.encoding():
+                                return
+                            raw = np.frombuffer(bytes(data.data()), dtype=np.uint8)
+                            depth = raw.view(np.uint16).reshape((data.height(), data.width()))
+                            vis = cv2.normalize(depth, None, 0, 255, cv2.NORM_MINMAX, dtype=cv2.CV_8U)
+                            color = cv2.applyColorMap(vis, cv2.COLORMAP_JET)
+                            self.frame_ready.emit(i, color)
+                    except Exception:
+                        pass
+                return cb
 
-        def cb(data):
             try:
-                arr = np.array(data.data(), dtype=np.uint8)
-                img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
-                if img is not None:
-                    self.frame_ready.emit(img)
-            except Exception:
-                pass
-
-        try:
-            self._mw.subscribeCompressedImage(topic, cb)
-            self.log_msg.emit(f"已订阅 {name}  {topic}")
-        except Exception as e:
-            self.log_msg.emit(f"订阅失败 {topic}: {e}")
-            return
+                if stype == "rgb":
+                    mw.subscribeCompressedImage(topic, make_cb(idx, "rgb"))
+                else:
+                    mw.subscribeImage(topic, make_cb(idx, "depth"), QOS_BEST)
+                self.log_msg.emit(f"已订阅 {name}  {topic}")
+            except Exception as e:
+                self.log_msg.emit(f"订阅失败 {topic}: {e}")
 
         while self._running:
             time.sleep(1)
