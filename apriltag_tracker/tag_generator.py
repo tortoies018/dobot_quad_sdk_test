@@ -6,7 +6,7 @@ from pathlib import Path
 
 
 # ─── 参数 ───────────────────────────────────────────
-TAG_SIZE_MM_NOM = 160     # 标称 tag 边长（mm，打印参考值）
+TAG_SIZE_MM_NOM = 155     # 标称 tag 边长（mm，打印参考值）
 A4_W_MM = 210
 A4_H_MM = 297
 DPI = 300
