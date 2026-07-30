@@ -54,15 +54,11 @@ class MainWindow(QMainWindow, Ui_MainWindow):
         """通用帧处理：检测 + 显示 + 捕获"""
         result, detected, _ = engine.detect_and_capture(img, capture_flag)
 
-        # 显示画面
+        # 直接显示原始分辨率，不做缩放
         h, w, ch = result.shape
         qt = QImage(result.data, w, h, ch * w, QImage.Format.Format_BGR888)
-        pix = QPixmap.fromImage(qt).scaled(
-            label_view.width(), label_view.height(),
-            Qt.AspectRatioMode.KeepAspectRatio,
-            Qt.TransformationMode.SmoothTransformation,
-        )
-        label_view.setPixmap(pix)
+        label_view.setPixmap(QPixmap.fromImage(qt))
+        label_view.setFixedSize(w, h)
 
         # 更新信息
         if detected:
