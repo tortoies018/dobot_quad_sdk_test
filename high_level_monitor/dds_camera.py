@@ -22,9 +22,10 @@ class DDSCamera(QThread):
     camera_switched = Signal(str)
     log_msg = Signal(str)
 
-    def __init__(self, camera_index=0, parent=None):
+    def __init__(self, camera_index=0, config_path="config/dds_config.yaml", parent=None):
         super().__init__(parent)
-        self._camera_index = camera_index  # 0=前, 1=后
+        self._camera_index = camera_index
+        self._config_path = config_path
         self._running = True
         self._mw = None
 
@@ -35,7 +36,7 @@ class DDSCamera(QThread):
 
     def run(self):
         try:
-            self._mw = dds.PyDDSMiddleware(0)
+            self._mw = dds.PyDDSMiddleware(self._config_path)
             self.log_msg.emit("DDS 相机中间件已初始化")
         except Exception as e:
             self.log_msg.emit(f"DDS 初始化失败: {e}")

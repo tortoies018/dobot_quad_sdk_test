@@ -1,6 +1,7 @@
 """主窗口——组装 UI 并连接 gRPC 数据信号和 DDS 相机"""
 
 from datetime import datetime
+from pathlib import Path
 
 from PySide6.QtCore import QTimer, Qt
 from PySide6.QtWidgets import QMainWindow, QSplitter, QWidget, QVBoxLayout
@@ -56,7 +57,8 @@ class MainWindow(QMainWindow, Ui_MainWindow):
         self._poller.start()
 
         # ---- DDS 相机 (底层画面) ----
-        self._dds_cam = DDSCamera(camera_index=0)
+        cam_config = str(Path(__file__).resolve().parent / "config" / "dds_config.yaml")
+        self._dds_cam = DDSCamera(camera_index=0, config_path=cam_config)
         self._dds_cam.frame_ready.connect(self._cam_view.update_frame)
         self._dds_cam.log_msg.connect(self.statusbar.showMessage)
         self._dds_cam.start()

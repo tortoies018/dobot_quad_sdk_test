@@ -35,7 +35,8 @@ class MainWindow(QMainWindow, Ui_MainWindow):
         self.controlLayout.insertWidget(1, source_box)
 
         # 标定工作线程
-        self._worker = CalibWorker()
+        cfg_path = str(Path(__file__).resolve().parent / "config" / "dds_config.yaml")
+        self._worker = CalibWorker(config_path=cfg_path)
         self._worker.frame_ready.connect(self._on_frame)
         self._worker.corners_detected.connect(self._on_corners)
         self._worker.calib_done.connect(self._on_calib_done)
@@ -96,7 +97,8 @@ class MainWindow(QMainWindow, Ui_MainWindow):
         self._on_reset()
         self._worker.stop()
         self._worker.wait(1000)
-        self._worker = CalibWorker()
+        cfg_path = str(Path(__file__).resolve().parent / "config" / "dds_config.yaml")
+        self._worker = CalibWorker(config_path=cfg_path)
         self._worker.frame_ready.connect(self._on_frame)
         self._worker.corners_detected.connect(self._on_corners)
         self._worker.calib_done.connect(self._on_calib_done)

@@ -28,9 +28,10 @@ class CalibWorker(QThread):
     # 可供选择的信号源
     SOURCES = ["DDS 前置 RGB", "DDS 后置 RGB", "OpenCV 相机 0", "OpenCV 相机 1"]
 
-    def __init__(self, parent=None):
+    def __init__(self, config_path="config/dds_config.yaml", parent=None):
         super().__init__(parent)
         self._source = "DDS 前置 RGB"
+        self._config_path = config_path
         self._running = True
         self._capture_enabled = False
         self._mw = None
@@ -73,7 +74,7 @@ class CalibWorker(QThread):
     def _run_dds(self):
         """DDS 信号源：订阅机器狗相机话题"""
         try:
-            self._mw = dds.PyDDSMiddleware(0)
+            self._mw = dds.PyDDSMiddleware(self._config_path)
         except Exception as e:
             self.log_msg.emit(f"DDS 初始化失败: {e}")
             self.log_msg.emit("提示: 请在组合框切换为 OpenCV 相机")
