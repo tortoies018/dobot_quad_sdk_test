@@ -28,11 +28,13 @@ class MainWindow(QMainWindow, Ui_MainWindow):
         self._viz3d = Viz3D()
         self._cam_view = CameraView()
 
+        self._cam_view.setMaximumHeight(400)
+
         right_split = QSplitter(Qt.Vertical)
         right_split.addWidget(self._viz3d)
         right_split.addWidget(self._cam_view)
-        right_split.setStretchFactor(0, 5)
-        right_split.setStretchFactor(1, 4)
+        right_split.setStretchFactor(0, 7)
+        right_split.setStretchFactor(1, 1)
         right_split.setStyleSheet("QSplitter::handle { background:#444; height:2px; }")
 
         self.mainLayout.addWidget(right_split)
