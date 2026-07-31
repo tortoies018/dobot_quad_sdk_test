@@ -1,20 +1,25 @@
 """
-机器人指令面板——状态显示 + 分类命令按钮
+机器人指令中心——命令按钮 + 相机画面 + 3D IMU轨迹 + 指令日志
 
 通过高层 gRPC API (RobotClient) 向机器狗下达各种控制指令，
-实时显示机器人的状态信息，并将指令执行结果记录在右侧日志中。
+同时显示 DDS 相机画面和机体位姿的 3D 轨迹，并记录指令日志。
 """
 
 import sys
+from pathlib import Path
+
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QTextCursor
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QGroupBox, QPushButton, QLabel, QTextEdit, QStatusBar,
-    QGridLayout, QSlider, QSpinBox, QLineEdit, QFormLayout,
+    QGridLayout, QSpinBox, QLineEdit, QFormLayout, QSplitter,
 )
 
 from robot_worker import RobotWorker
+from dds_camera import FourCamWorker
+from camera_view import CameraView
+from viz_3d import Viz3D
 
 # ─── 按钮样式定义 ─────────────────────────────────────
 # 通用按钮基础样式（字体、内边距、圆角、最小宽度）
@@ -38,12 +43,12 @@ class MainWindow(QMainWindow):
         """初始化界面布局、创建工作线程、连接信号"""
         super().__init__()
         self.setWindowTitle("Dobot Quad 指令中心")
-        self.setMinimumSize(1100, 750)  # 窗口最小尺寸
-        self.setStyleSheet("QMainWindow { background:#1e1e1e; }")  # 深色背景
+        self.setMinimumSize(1400, 850)
+        self.setStyleSheet("QMainWindow { background:#1e1e1e; }")
 
         central = QWidget()
         self.setCentralWidget(central)
-        main = QHBoxLayout(central)  # 主水平布局
+        main = QHBoxLayout(central)
 
         # ═══════ 左侧：命令按钮区域 ═══════
         left = QWidget()
@@ -55,17 +60,16 @@ class MainWindow(QMainWindow):
                            "margin-top:12px; padding-top:16px; background:#252525; } "
                            "QGroupBox::title { subcontrol-origin:margin; left:12px; padding:0 6px; }")
         form = QFormLayout(info)
-        # 创建四个状态显示标签
         self.lbl_type = QLabel("-")   # 机器人类型
         self.lbl_fsm = QLabel("-")    # FSM 状态
         self.lbl_speed = QLabel("-")  # 速度比
         self.lbl_avoid = QLabel("-")  # 避障开关
         for l in [self.lbl_type, self.lbl_fsm, self.lbl_speed, self.lbl_avoid]:
             l.setStyleSheet("color:#fff; font:bold 14px monospace;")
-        form.addRow("类型:", self.lbl_type)   # 机器人类型
-        form.addRow("FSM:", self.lbl_fsm)     # 当前状态机状态
-        form.addRow("速度:", self.lbl_speed)  # 当前速度比
-        form.addRow("避障:", self.lbl_avoid)  # 避障是否开启
+        form.addRow("类型:", self.lbl_type)
+        form.addRow("FSM:", self.lbl_fsm)
+        form.addRow("速度:", self.lbl_speed)
+        form.addRow("避障:", self.lbl_avoid)
         left_layout.addWidget(info)
 
         # ── 滚动命令区容器 ──
@@ -74,38 +78,36 @@ class MainWindow(QMainWindow):
 
         # ── 分组1：状态切换 ──
         grp = QGroupBox("状态切换")
-        grp.setStyleSheet(info.styleSheet())  # 复用信息栏样式
+        grp.setStyleSheet(info.styleSheet())
         g = QGridLayout(grp)
         g.setSpacing(4)
-        # 按钮列表：(显示文字, 方法名, 样式)
         for i, (t, s, ss) in enumerate([
-            ("被动", "passive", STYLE_DANGER),   # 电机断电
-            ("趴下", "stand_down", STYLE_WARN),  # 趴下
+            ("被动", "passive", STYLE_DANGER),      # 电机断电
+            ("趴下", "stand_down", STYLE_WARN),     # 趴下
             ("平衡站", "balance_stand", STYLE_OK),  # 平衡站立
-            ("行走", "walk", STYLE_OK),          # 行走模式
-            ("奔跑", "flying_trot", STYLE_OK),   # 奔跑模式
-            ("编舞", "choreo", STYLE_INFO),      # 编舞状态
-            ("RL", "rl", STYLE_SPECIAL),         # RL 模式
-            ("跳舞", "dance", STYLE_SPECIAL),    # 跳舞
-            ("紧急", "emergency", STYLE_DANGER), # 紧急停止
-            ("恢复", "recovery", STYLE_WARN),    # 恢复/自救
-            ("跳跃", "jump", STYLE_SPECIAL),     # 跳跃
-            ("后空翻", "backflip", STYLE_DANGER),# 后空翻
-            ("切换腿", "change_mode", STYLE_INFO),# 切换腿部构型
-            ("挥手", "wave_hand", STYLE_SPECIAL),# 打招呼
+            ("行走", "walk", STYLE_OK),             # 行走模式
+            ("奔跑", "flying_trot", STYLE_OK),      # 奔跑模式
+            ("编舞", "choreo", STYLE_INFO),         # 编舞状态
+            ("RL", "rl", STYLE_SPECIAL),            # RL 模式
+            ("跳舞", "dance", STYLE_SPECIAL),       # 跳舞
+            ("紧急", "emergency", STYLE_DANGER),    # 紧急停止
+            ("恢复", "recovery", STYLE_WARN),       # 恢复/自救
+            ("跳跃", "jump", STYLE_SPECIAL),        # 跳跃
+            ("后空翻", "backflip", STYLE_DANGER),   # 后空翻
+            ("切换腿", "change_mode", STYLE_INFO),  # 切换腿部构型
+            ("挥手", "wave_hand", STYLE_SPECIAL),   # 打招呼
         ]):
-            btn = QPushButton(t)       # 创建按钮
-            btn.setStyleSheet(ss)      # 应用样式
-            btn.clicked.connect(lambda _, c=s: self._cmd(c))  # 绑定点击事件
-            g.addWidget(btn, i // 4, i % 4)  # 4列网格布局
+            btn = QPushButton(t)
+            btn.setStyleSheet(ss)
+            btn.clicked.connect(lambda _, c=s: self._cmd(c))
+            g.addWidget(btn, i // 4, i % 4)
         scroll_layout.addWidget(grp)
 
         # ── 分组2：轮足专用 ──
         grp2 = QGroupBox("轮足专用")
-        grp2.setStyleSheet(info.styleSheet().replace("#0af", "#f0a"))  # 标题改粉色
+        grp2.setStyleSheet(info.styleSheet().replace("#0af", "#f0a"))
         g2 = QGridLayout(grp2)
         g2.setSpacing(4)
-        # 轮足机器人专用状态
         for i, (t, s) in enumerate([("轮式", "wheel_loco"), ("漂移", "drift"), ("倒立", "handstand")]):
             btn = QPushButton(t)
             btn.setStyleSheet(STYLE_INFO)
@@ -115,19 +117,17 @@ class MainWindow(QMainWindow):
 
         # ── 分组3：运动控制 ──
         grp3 = QGroupBox("运动控制")
-        grp3.setStyleSheet(info.styleSheet().replace("#0af", "#0f0"))  # 标题改绿色
+        grp3.setStyleSheet(info.styleSheet().replace("#0af", "#0f0"))
         g3 = QGridLayout(grp3)
         g3.setSpacing(4)
-        # 距离和角度输入框
         self._dist_le = QLineEdit("1.0")   # 默认距离 1 米
         self._dist_le.setStyleSheet("background:#333; color:#fff; padding:4px; max-width:60px;")
         self._angle_le = QLineEdit("90")   # 默认角度 90 度
         self._angle_le.setStyleSheet("background:#333; color:#fff; padding:4px; max-width:60px;")
-        g3.addWidget(QLabel("距离:"), 0, 0)  # 距离标签
-        g3.addWidget(self._dist_le, 0, 1)    # 距离输入框
-        g3.addWidget(QLabel("角度:"), 0, 2)  # 角度标签
-        g3.addWidget(self._angle_le, 0, 3)   # 角度输入框
-        # 运动按钮列表
+        g3.addWidget(QLabel("距离:"), 0, 0)
+        g3.addWidget(self._dist_le, 0, 1)
+        g3.addWidget(QLabel("角度:"), 0, 2)
+        g3.addWidget(self._angle_le, 0, 3)
         for i, (t, s) in enumerate([
             ("前进", "walk_forward"),   # 向前走
             ("后退", "walk_backward"),  # 向后走
@@ -140,67 +140,90 @@ class MainWindow(QMainWindow):
         ]):
             btn = QPushButton(t)
             btn.setStyleSheet(STYLE_OK)
-            btn.clicked.connect(lambda _, c=s: self._motion(c))  # 绑定运动处理
-            g3.addWidget(btn, 1 + i // 4, (i % 4))  # 第二行开始，4列
+            btn.clicked.connect(lambda _, c=s: self._motion(c))
+            g3.addWidget(btn, 1 + i // 4, (i % 4))
         scroll_layout.addWidget(grp3)
 
         # ── 分组4：配置 ──
         grp4 = QGroupBox("配置")
-        grp4.setStyleSheet(info.styleSheet().replace("#0af", "#fa0"))  # 标题改橙色
+        grp4.setStyleSheet(info.styleSheet().replace("#0af", "#fa0"))
         g4 = QFormLayout(grp4)
-        # 速度比设置
         self._speed_spin = QSpinBox()   # 速度比调节控件
         self._speed_spin.setRange(10, 100)  # 速度比范围 [10, 100]
         self._speed_spin.setValue(50)       # 默认 50
         self._speed_spin.setStyleSheet("background:#333; color:#fff; padding:4px;")
-        btn_speed = QPushButton("设置")     # 设置速度比按钮
+        btn_speed = QPushButton("设置")
         btn_speed.setStyleSheet(STYLE_OK)
         btn_speed.clicked.connect(lambda: self._cmd("set_speed_ratio", self._speed_spin.value()))
-        h = QHBoxLayout()  # 水平排列：数字输入 + 设置按钮
+        h = QHBoxLayout()
         h.addWidget(self._speed_spin)
         h.addWidget(btn_speed)
-        h.addStretch()  # 弹性空间
+        h.addStretch()
         g4.addRow("速度比:", h)
 
-        # 避障开关按钮
         self._avoid_btn = QPushButton("切换避障")
         self._avoid_btn.setStyleSheet(STYLE_WARN)
         self._avoid_btn.clicked.connect(self._toggle_avoid)
         g4.addRow(self._avoid_btn)
 
-        # 安全停止按钮（等效 kill_robot）
         btn_kill = QPushButton("安全停止 (kill_robot)")
         btn_kill.setStyleSheet(STYLE_DANGER + "QPushButton { font-weight:bold; }")
         btn_kill.clicked.connect(lambda: self._cmd("set_target_state", "passive"))
         g4.addRow(btn_kill)
         scroll_layout.addWidget(grp4)
 
-        scroll_layout.addStretch()       # 命令区底部留弹性空间
-        left_layout.addWidget(scroll, 1) # 命令区占左侧大部分
-        main.addWidget(left, 4)          # 左侧宽度比例 4
+        scroll_layout.addStretch()
+        left_layout.addWidget(scroll, 1)
+        main.addWidget(left, 4)
 
-        # ═══════ 右侧：指令日志 ═══════
+        # ═══════ 中间：四相机（缩放适应窗口） ═══════
+        self._cam_view = CameraView()
+        main.addWidget(self._cam_view, 6)
+
+        # ═══════ 右侧：指令日志（可调整宽度） ═══════
         right = QWidget()
         right_layout = QVBoxLayout(right)
         right_layout.addWidget(QLabel("指令日志", styleSheet="color:#0af; font:bold 14px; padding:4px;"))
-        self._log = QTextEdit()              # 日志文本框
-        self._log.setReadOnly(True)          # 只读
+        self._log = QTextEdit()
+        self._log.setReadOnly(True)
+        self._log.setMinimumWidth(260)
         self._log.setStyleSheet("background:#111; color:#0f0; font:12px monospace; border:1px solid #333;")
-        right_layout.addWidget(self._log, 1) # 日志区占右侧
-        main.addWidget(right, 3)             # 右侧宽度比例 3
+        right_layout.addWidget(self._log, 1)
+        main.addWidget(right, 3)
+
+        # 左侧命令区 + 3D 轨迹放在最左列（上下分割）
+        # 3D IMU 轨迹视图（基于 gRPC 机体位姿），移到命令面板下方
+        self._viz3d = Viz3D()
+        left_split = QSplitter(Qt.Vertical)
+        left_split.addWidget(left)      # 上方：命令面板
+        left_split.addWidget(self._viz3d)  # 下方：3D 轨迹
+        left_split.setStretchFactor(0, 3)
+        left_split.setStretchFactor(1, 2)
+        left_split.setStyleSheet("QSplitter::handle { background:#444; height:2px; }")
+        # 将原来的 left（宽度比例4）替换为 left_split
+        main.removeWidget(left)
+        main.insertWidget(0, left_split, 4)
 
         # ═══════ 状态栏 ═══════
         self._sb = QStatusBar()
         self._sb.setStyleSheet("color:#aaa; background:#222; font:12px;")
         self.setStatusBar(self._sb)
 
-        # ═══════ 创建工作线程并连接信号 ═══════
-        self._worker = RobotWorker(addr="192.168.1.6:50051")  # 连接机器人 WiFi
+        # ═══════ gRPC 工作线程 ═══════
+        self._worker = RobotWorker(addr="192.168.1.6:50051")
         self._worker.status_updated.connect(self._on_status)  # 状态更新
-        self._worker.command_result.connect(self._log_msg)    # 指令结果
+        self._worker.pose_ready.connect(self._viz3d.update_pose)  # 3D 轨迹
+        self._worker.command_result.connect(self._log_msg)    # 指令结果日志
         self._worker.connected.connect(self._on_connected)    # 连接状态
         self._worker.log.connect(self._sb.showMessage)        # 日志消息
-        self._worker.start()  # 启动工作线程
+        self._worker.start()
+
+        # ═══════ DDS 四相机线程 ═══════
+        cam_cfg = str(Path(__file__).resolve().parent / "config" / "dds_config.yaml")
+        self._four_cam = FourCamWorker(config_path=cam_cfg)
+        self._four_cam.frame_ready.connect(self._cam_view.update_frame)
+        self._four_cam.log_msg.connect(self._sb.showMessage)
+        self._four_cam.start()
 
         self._avoid_state = False  # 避障当前状态（初始关闭）
 
@@ -208,8 +231,8 @@ class MainWindow(QMainWindow):
 
     def _cmd(self, name, *args):
         """通用指令发送：通过名称调用 RobotClient 方法"""
-        res = self._worker.send(name, *args)  # 执行指令
-        self._log_msg(res)                    # 记录结果
+        res = self._worker.send(name, *args)
+        self._log_msg(res)
 
     def _motion(self, name):
         """运动指令处理：根据按钮名称自动适配参数"""
@@ -242,9 +265,9 @@ class MainWindow(QMainWindow):
 
     def _on_status(self, rt, fsm, speed, avoid, info, tele):
         """机器人状态更新回调：刷新状态栏标签"""
-        self.lbl_type.setText(rt)          # 机器人类型
-        self.lbl_fsm.setText(fsm)          # FSM 状态名
-        self.lbl_speed.setText(str(speed)) # 速度比
+        self.lbl_type.setText(rt)
+        self.lbl_fsm.setText(fsm)
+        self.lbl_speed.setText(str(speed))
         self.lbl_avoid.setText("已开启" if avoid else "已关闭")
         self.lbl_avoid.setStyleSheet(
             "color:{}; font:bold 14px monospace;".format("#0f0" if avoid else "#f44")
@@ -261,9 +284,11 @@ class MainWindow(QMainWindow):
         self._log.moveCursor(QTextCursor.MoveOperation.End)
 
     def closeEvent(self, event):
-        """窗口关闭：停止后台线程并等待退出"""
+        """窗口关闭：停止所有后台线程并等待退出"""
         self._worker.stop()
         self._worker.wait(2000)
+        self._four_cam.stop()
+        self._four_cam.wait(2000)
         super().closeEvent(event)
 
 

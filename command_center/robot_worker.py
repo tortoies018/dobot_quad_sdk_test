@@ -16,9 +16,10 @@ class RobotWorker(QThread):
 
     # 状态更新信号：(机器人类型, FSM状态, 速度比, 避障开关, 附加信息, 遥测文本)
     status_updated = Signal(str, str, int, bool, str, dict)
-    command_result = Signal(str)   # 指令执行结果
-    connected = Signal(bool)       # 连接状态变化
-    log = Signal(str)              # 日志消息
+    pose_ready = Signal(list, list)      # 机体位置, 姿态RPY (用于3D IMU轨迹)
+    command_result = Signal(str)         # 指令执行结果
+    connected = Signal(bool)             # 连接状态变化
+    log = Signal(str)                    # 日志消息
 
     def __init__(self, addr="192.168.1.6:50051", parent=None):
         """
@@ -48,9 +49,10 @@ class RobotWorker(QThread):
                 state = self._robot.get_state()
                 rt = self._robot.get_robot_type()  # 机器人类型
 
-                # 提取机体位置用于遥测显示
+                # 提取机体数据（位置 + 姿态，用于 3D IMU 轨迹）
                 rs = state.robot_state
                 pos = list(rs.pos_body) if rs.pos_body else []
+                rpy = list(rs.ori_body) if rs.ori_body else []
                 tele = f"位置:[{pos[0]:.2f},{pos[1]:.2f},{pos[2]:.2f}]" if len(pos) >= 3 else ""
 
                 # 发送状态更新信号
@@ -58,6 +60,9 @@ class RobotWorker(QThread):
                     rt, state.current_state, state.current_speed_ratio,
                     state.obstacle_avoidance_enabled, "轮询 OK", tele
                 )
+                # 发送位姿信号供 3D 轨迹显示
+                if len(pos) >= 3 and len(rpy) >= 3:
+                    self.pose_ready.emit(pos, rpy)
             except Exception as e:
                 self.log.emit(f"轮询失败: {e}")
 
