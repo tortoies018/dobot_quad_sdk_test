@@ -217,8 +217,8 @@ class MainWindow(QMainWindow):
         a = float(self._angle_le.text() or "90")   # 读取角度输入
         if "left" in name or "right" in name:
             if "rotate" in name:
-                # 左转/右转 → rotate(direction, angle)
-                self._worker.send(name.replace("rotate_", "rotate"), a)
+                # 左转/右转 → rotate_left(angle) / rotate_right(angle)
+                self._worker.send(name, a)
             elif "circle" in name:
                 # 左圈/右圈 → circle(direction, turns)
                 # 将角度换算为圈数（90°/圈），限制最大 10 圈
