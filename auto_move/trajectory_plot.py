@@ -4,33 +4,35 @@ IMU 轨迹绘图控件——绘制机器人在世界坐标系中的 XY 运动轨
 数据来源：gRPC get_state().robot_state.pos_body（IMU 融合定位）。
 """
 
+import math
+
 from PySide6.QtCore import Qt, QPointF
 from PySide6.QtGui import QPainter, QPen, QColor, QPolygonF
-from PySide6.QtWidgets import QWidget, QVBoxLayout, QLabel
+from PySide6.QtWidgets import QWidget, QSizePolicy
 
 
 class TrajectoryPlot(QWidget):
-    """2D 轨迹绘图：世界坐标 XY 平面"""
+    """2D 轨迹绘图：世界坐标 XY 平面（纯绘制控件，无内部子窗口）"""
+
+    TITLE_H = 24  # 顶部标题栏高度
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setMinimumSize(400, 220)
-        self.setStyleSheet("background-color:#111;")
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.setStyleSheet("background-color:#16181c;")
 
         self._points = []        # [(x, y), ...] 单位 m
         self._clear_pts = []     # 每次移动的起点标记
         self._max_points = 5000
 
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-
-        bar = QLabel("  世界坐标 XY 轨迹 (IMU 融合定位)")
-        bar.setStyleSheet("color:#0af; font:bold 13px; padding:4px; background:#222;")
-        layout.addWidget(bar)
-
     def add_point(self, x, y):
-        """追加一个轨迹点并触发重绘"""
-        self._points.append((float(x), float(y)))
+        """追加一个轨迹点并触发重绘（自动过滤 NaN/Inf）"""
+        x = float(x)
+        y = float(y)
+        if not (math.isfinite(x) and math.isfinite(y)):
+            return
+        self._points.append((x, y))
         if len(self._points) > self._max_points:
             self._points.pop(0)
         self.update()
@@ -47,22 +49,40 @@ class TrajectoryPlot(QWidget):
         self.update()
 
     def paintEvent(self, event):
-        super().paintEvent(event)
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
 
-        w, h = self.width(), self.height()
+        w = self.width()
+        h = self.height()
+        th = self.TITLE_H
+        plot_h = h - th
+
+        # ── 标题栏 ──
+        painter.fillRect(0, 0, w, th, QColor("#22262b"))
+        painter.setPen(QColor("#33b5ff"))
+        font = painter.font()
+        font.setBold(True)
+        font.setPixelSize(13)
+        painter.setFont(font)
+        painter.drawText(8, 17, "世界坐标 XY 轨迹 (IMU 融合定位)")
+
+        # 绘图区域边框（始终可见，明确边界）
+        painter.setPen(QPen(QColor("#3a4046"), 1))
+        painter.drawRect(0, th, w - 1, plot_h - 1)
+
+        # 过滤无效点
+        valid_pts = [(x, y) for x, y in self._points if math.isfinite(x) and math.isfinite(y)]
 
         # 无数据时提示
-        if not self._points:
-            painter.setPen(QPen(QColor("#555"), 1))
-            painter.drawText(w // 2 - 60, h // 2, "等待 IMU 位置数据...")
+        if not valid_pts:
+            painter.setPen(QPen(QColor("#a8b3bc"), 1))
+            painter.drawText(w // 2 - 70, th + plot_h // 2, "等待 IMU 位置数据...")
             painter.end()
             return
 
         # 计算数据范围（自动缩放）
-        xs = [p[0] for p in self._points]
-        ys = [p[1] for p in self._points]
+        xs = [p[0] for p in valid_pts]
+        ys = [p[1] for p in valid_pts]
         min_x, max_x = min(xs), max(xs)
         min_y, max_y = min(ys), max(ys)
 
@@ -73,17 +93,20 @@ class TrajectoryPlot(QWidget):
         min_x, max_x = cx0 - rx, cx0 + rx
         min_y, max_y = cy0 - ry, cy0 + ry
         # 留边距
-        min_x -= rx * 0.1; max_x += rx * 0.1
-        min_y -= ry * 0.1; max_y += ry * 0.1
-        rx = max(max_x - min_x, 0.1); ry = max(max_y - min_y, 0.1)
+        min_x -= rx * 0.1
+        max_x += rx * 0.1
+        min_y -= ry * 0.1
+        max_y += ry * 0.1
+        rx = max(max_x - min_x, 0.1)
+        ry = max(max_y - min_y, 0.1)
 
         def to_screen(x, y):
             sx = (x - min_x) / rx * (w - 40) + 20
-            sy = h - 20 - (y - min_y) / ry * (h - 40)
+            sy = h - 20 - (y - min_y) / ry * (plot_h - 40)
             return QPointF(sx, sy)
 
         # 网格：每 0.5m 一格（数据范围大时自动变稀）
-        painter.setPen(QPen(QColor("#222"), 1))
+        painter.setPen(QPen(QColor("#2b3138"), 1))
         grid = 0.5
         while rx / grid > 10:
             grid *= 2
@@ -101,32 +124,34 @@ class TrajectoryPlot(QWidget):
             gy += grid
 
         # 轴标签
-        painter.setPen(QPen(QColor("#888"), 1))
-        painter.drawText(10, 12, f"X: {min_x:.1f}~{max_x:.1f} m")
+        painter.setPen(QPen(QColor("#a8b3bc"), 1))
+        painter.drawText(10, th + 12, f"X: {min_x:.1f}~{max_x:.1f} m")
         painter.drawText(10, h - 6, f"Y: {min_y:.1f}~{max_y:.1f} m")
 
         # 移动起点标记（橙点）
         for sx, sy in self._clear_pts:
+            if not (math.isfinite(sx) and math.isfinite(sy)):
+                continue
             p = to_screen(sx, sy)
             painter.setPen(QPen(QColor("#fa0"), 1))
             painter.setBrush(QColor("#fa0"))
             painter.drawEllipse(p, 5, 5)
 
         # 轨迹线（绿色）
-        if len(self._points) >= 2:
-            path = QPolygonF([to_screen(x, y) for x, y in self._points])
+        if len(valid_pts) >= 2:
+            path = QPolygonF([to_screen(x, y) for x, y in valid_pts])
             painter.setPen(QPen(QColor("#0f0"), 2))
             painter.setBrush(Qt.BrushStyle.NoBrush)
             painter.drawPolyline(path)
 
         # 当前位置（红点）
-        if self._points:
-            p = to_screen(*self._points[-1])
-            painter.setPen(QPen(QColor("#f00"), 1))
-            painter.setBrush(QColor("#f00"))
-            painter.drawEllipse(p, 5, 5)
-            painter.setPen(QPen(QColor("#fff"), 1))
-            painter.drawText(int(p.x()) + 8, int(p.y()) - 4,
-                             f"({self._points[-1][0]:.2f}, {self._points[-1][1]:.2f})")
+        last_x, last_y = valid_pts[-1]
+        p = to_screen(last_x, last_y)
+        painter.setPen(QPen(QColor("#f00"), 1))
+        painter.setBrush(QColor("#f00"))
+        painter.drawEllipse(p, 5, 5)
+        painter.setPen(QPen(QColor("#fff"), 1))
+        painter.drawText(int(p.x()) + 8, int(p.y()) - 4,
+                         f"({last_x:.2f}, {last_y:.2f})")
 
         painter.end()

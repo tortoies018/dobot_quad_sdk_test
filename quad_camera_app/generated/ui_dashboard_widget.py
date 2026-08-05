@@ -28,13 +28,13 @@ class Ui_DashboardWidget(object):
         self.mainLayout.setContentsMargins(4, 4, 4, 4)
         self.groupIMU = QGroupBox(DashboardWidget)
         self.groupIMU.setObjectName(u"groupIMU")
-        self.groupIMU.setStyleSheet(u"QGroupBox { font: bold 13px; color: #0af; border: 1px solid #444; border-radius: 4px; margin-top: 10px; padding-top: 14px; } QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 4px; }")
+        self.groupIMU.setStyleSheet(u"QGroupBox { font: bold 13px; color: #4fc3f7; border: 1px solid #42464c; border-radius: 4px; margin-top: 10px; padding-top: 14px; } QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 4px; }")
         self.imuLayout = QFormLayout(self.groupIMU)
         self.imuLayout.setSpacing(2)
         self.imuLayout.setObjectName(u"imuLayout")
         self.labelQuat = QLabel(self.groupIMU)
         self.labelQuat.setObjectName(u"labelQuat")
-        self.labelQuat.setStyleSheet(u"color: #aaa; font: 11px;")
+        self.labelQuat.setStyleSheet(u"color: #b8bec4; font: 11px;")
 
         self.imuLayout.setWidget(0, QFormLayout.ItemRole.LabelRole, self.labelQuat)
 
@@ -46,7 +46,7 @@ class Ui_DashboardWidget(object):
 
         self.labelGyro = QLabel(self.groupIMU)
         self.labelGyro.setObjectName(u"labelGyro")
-        self.labelGyro.setStyleSheet(u"color: #aaa; font: 11px;")
+        self.labelGyro.setStyleSheet(u"color: #b8bec4; font: 11px;")
 
         self.imuLayout.setWidget(1, QFormLayout.ItemRole.LabelRole, self.labelGyro)
 
@@ -58,7 +58,7 @@ class Ui_DashboardWidget(object):
 
         self.labelAccel = QLabel(self.groupIMU)
         self.labelAccel.setObjectName(u"labelAccel")
-        self.labelAccel.setStyleSheet(u"color: #aaa; font: 11px;")
+        self.labelAccel.setStyleSheet(u"color: #b8bec4; font: 11px;")
 
         self.imuLayout.setWidget(2, QFormLayout.ItemRole.LabelRole, self.labelAccel)
 
@@ -70,7 +70,7 @@ class Ui_DashboardWidget(object):
 
         self.labelRPY = QLabel(self.groupIMU)
         self.labelRPY.setObjectName(u"labelRPY")
-        self.labelRPY.setStyleSheet(u"color: #aaa; font: 11px;")
+        self.labelRPY.setStyleSheet(u"color: #b8bec4; font: 11px;")
 
         self.imuLayout.setWidget(3, QFormLayout.ItemRole.LabelRole, self.labelRPY)
 
@@ -85,13 +85,13 @@ class Ui_DashboardWidget(object):
 
         self.groupBattery = QGroupBox(DashboardWidget)
         self.groupBattery.setObjectName(u"groupBattery")
-        self.groupBattery.setStyleSheet(u"QGroupBox { font: bold 13px; color: #0f0; border: 1px solid #444; border-radius: 4px; margin-top: 10px; padding-top: 14px; } QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 4px; }")
+        self.groupBattery.setStyleSheet(u"QGroupBox { font: bold 13px; color: #69f0ae; border: 1px solid #42464c; border-radius: 4px; margin-top: 10px; padding-top: 14px; } QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 4px; }")
         self.batteryLayout = QFormLayout(self.groupBattery)
         self.batteryLayout.setSpacing(2)
         self.batteryLayout.setObjectName(u"batteryLayout")
         self.labelBatteryLevel = QLabel(self.groupBattery)
         self.labelBatteryLevel.setObjectName(u"labelBatteryLevel")
-        self.labelBatteryLevel.setStyleSheet(u"color: #aaa; font: 11px;")
+        self.labelBatteryLevel.setStyleSheet(u"color: #b8bec4; font: 11px;")
 
         self.batteryLayout.setWidget(0, QFormLayout.ItemRole.LabelRole, self.labelBatteryLevel)
 
@@ -106,7 +106,7 @@ class Ui_DashboardWidget(object):
 
         self.groupMotors = QGroupBox(DashboardWidget)
         self.groupMotors.setObjectName(u"groupMotors")
-        self.groupMotors.setStyleSheet(u"QGroupBox { font: bold 13px; color: #fa0; border: 1px solid #444; border-radius: 4px; margin-top: 10px; padding-top: 14px; } QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 4px; }")
+        self.groupMotors.setStyleSheet(u"QGroupBox { font: bold 13px; color: #ffb74d; border: 1px solid #42464c; border-radius: 4px; margin-top: 10px; padding-top: 14px; } QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 4px; }")
         self.motorLayout = QVBoxLayout(self.groupMotors)
         self.motorLayout.setSpacing(2)
         self.motorLayout.setObjectName(u"motorLayout")
@@ -115,13 +115,13 @@ class Ui_DashboardWidget(object):
 
         self.groupVoice = QGroupBox(DashboardWidget)
         self.groupVoice.setObjectName(u"groupVoice")
-        self.groupVoice.setStyleSheet(u"QGroupBox { font: bold 13px; color: #f0a; border: 1px solid #444; border-radius: 4px; margin-top: 10px; padding-top: 14px; } QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 4px; }")
+        self.groupVoice.setStyleSheet(u"QGroupBox { font: bold 13px; color: #f48fb1; border: 1px solid #42464c; border-radius: 4px; margin-top: 10px; padding-top: 14px; } QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 4px; }")
         self.voiceLayout = QFormLayout(self.groupVoice)
         self.voiceLayout.setSpacing(2)
         self.voiceLayout.setObjectName(u"voiceLayout")
         self.labelVoiceData = QLabel(self.groupVoice)
         self.labelVoiceData.setObjectName(u"labelVoiceData")
-        self.labelVoiceData.setStyleSheet(u"color: #aaa; font: 11px;")
+        self.labelVoiceData.setStyleSheet(u"color: #b8bec4; font: 11px;")
 
         self.voiceLayout.setWidget(0, QFormLayout.ItemRole.LabelRole, self.labelVoiceData)
 
@@ -133,7 +133,7 @@ class Ui_DashboardWidget(object):
 
         self.labelVoiceAngle = QLabel(self.groupVoice)
         self.labelVoiceAngle.setObjectName(u"labelVoiceAngle")
-        self.labelVoiceAngle.setStyleSheet(u"color: #aaa; font: 11px;")
+        self.labelVoiceAngle.setStyleSheet(u"color: #b8bec4; font: 11px;")
 
         self.voiceLayout.setWidget(1, QFormLayout.ItemRole.LabelRole, self.labelVoiceAngle)
 

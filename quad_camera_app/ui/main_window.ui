@@ -12,7 +12,7 @@
    </size>
   </property>
   <property name="styleSheet">
-   <string notr="true">QMainWindow { background-color: #1e1e1e; }</string>
+   <string notr="true">QMainWindow { background-color: #202225; }</string>
   </property>
   <widget class="QWidget" name="centralwidget">
    <layout class="QHBoxLayout" name="mainLayout" stretch="7,3">
@@ -28,7 +28,7 @@
     <item>
      <widget class="QTabWidget" name="tabWidget">
       <property name="styleSheet">
-       <string notr="true">QTabWidget::pane { background: #2d2d2d; border: 1px solid #444; border-top: none; }</string>
+       <string notr="true">QTabWidget::pane { background: #2b2d31; border: 1px solid #42464c; border-top: none; }</string>
       </property>
       <property name="tabPosition">
        <enum>QTabWidget::North</enum>
@@ -39,7 +39,7 @@
   </widget>
   <widget class="QStatusBar" name="statusbar">
    <property name="styleSheet">
-    <string notr="true">color: #aaa; background: #333;</string>
+    <string notr="true">color: #b8bec4; background: #26292d;</string>
    </property>
   </widget>
  </widget>

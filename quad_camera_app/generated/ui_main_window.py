@@ -23,7 +23,7 @@ class Ui_MainWindow(object):
         if not MainWindow.objectName():
             MainWindow.setObjectName(u"MainWindow")
         MainWindow.setMinimumSize(QSize(1400, 900))
-        MainWindow.setStyleSheet(u"QMainWindow { background-color: #1e1e1e; }")
+        MainWindow.setStyleSheet(u"QMainWindow { background-color: #202225; }")
         self.centralwidget = QWidget(MainWindow)
         self.centralwidget.setObjectName(u"centralwidget")
         self.mainLayout = QHBoxLayout(self.centralwidget)
@@ -38,7 +38,7 @@ class Ui_MainWindow(object):
 
         self.tabWidget = QTabWidget(self.centralwidget)
         self.tabWidget.setObjectName(u"tabWidget")
-        self.tabWidget.setStyleSheet(u"QTabWidget::pane { background: #2d2d2d; border: 1px solid #444; border-top: none; }")
+        self.tabWidget.setStyleSheet(u"QTabWidget::pane { background: #2b2d31; border: 1px solid #42464c; border-top: none; }")
         self.tabWidget.setTabPosition(QTabWidget.North)
 
         self.mainLayout.addWidget(self.tabWidget)
@@ -48,7 +48,7 @@ class Ui_MainWindow(object):
         MainWindow.setCentralWidget(self.centralwidget)
         self.statusbar = QStatusBar(MainWindow)
         self.statusbar.setObjectName(u"statusbar")
-        self.statusbar.setStyleSheet(u"color: #aaa; background: #333;")
+        self.statusbar.setStyleSheet(u"color: #b8bec4; background: #26292d;")
         MainWindow.setStatusBar(self.statusbar)
 
         self.retranslateUi(MainWindow)

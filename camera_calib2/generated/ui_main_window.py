@@ -24,7 +24,7 @@ class Ui_MainWindow(object):
         if not MainWindow.objectName():
             MainWindow.setObjectName(u"MainWindow")
         MainWindow.setMinimumSize(QSize(1400, 850))
-        MainWindow.setStyleSheet(u"QMainWindow { background-color: #1e1e1e; }")
+        MainWindow.setStyleSheet(u"QMainWindow { background-color: #202225; }")
         self.centralwidget = QWidget(MainWindow)
         self.centralwidget.setObjectName(u"centralwidget")
         self.mainLayout = QHBoxLayout(self.centralwidget)
@@ -36,7 +36,7 @@ class Ui_MainWindow(object):
         self.titleFront = QLabel(self.panelFront)
         self.titleFront.setObjectName(u"titleFront")
         self.titleFront.setAlignment(Qt.AlignCenter)
-        self.titleFront.setStyleSheet(u"font: bold 16px; color: #0af; padding: 6px; background: #252525; border-radius: 4px;")
+        self.titleFront.setStyleSheet(u"font: bold 16px; color: #4fc3f7; padding: 6px; background: #2b2d31; border-radius: 4px;")
 
         self.layoutFront.addWidget(self.titleFront)
 
@@ -44,7 +44,7 @@ class Ui_MainWindow(object):
         self.viewFront.setObjectName(u"viewFront")
         self.viewFront.setAlignment(Qt.AlignCenter)
         self.viewFront.setMinimumSize(QSize(480, 360))
-        self.viewFront.setStyleSheet(u"background-color: #111; color: #555; font: 18px; border: 1px solid #333; border-radius: 2px;")
+        self.viewFront.setStyleSheet(u"background-color: #16181c; color: #a8b3bc; font: 18px; border: 1px solid #42464c; border-radius: 2px;")
 
         self.layoutFront.addWidget(self.viewFront)
 
@@ -52,20 +52,20 @@ class Ui_MainWindow(object):
         self.ctrlFront.setObjectName(u"ctrlFront")
         self.btnCapFront = QPushButton(self.panelFront)
         self.btnCapFront.setObjectName(u"btnCapFront")
-        self.btnCapFront.setStyleSheet(u"QPushButton { background:#0af; color:#fff; font:13px; padding:8px 20px; border-radius:4px; } QPushButton:hover { background:#0cf; } QPushButton:disabled { background:#555; }")
+        self.btnCapFront.setStyleSheet(u"QPushButton { background:#29b6f6; color:#fff; font:13px; padding:8px 20px; border-radius:4px; } QPushButton:hover { background:#4fc3f7; } QPushButton:disabled { background:#4a4d52; color:#9a9da2; }")
 
         self.ctrlFront.addWidget(self.btnCapFront)
 
         self.btnCalFront = QPushButton(self.panelFront)
         self.btnCalFront.setObjectName(u"btnCalFront")
-        self.btnCalFront.setStyleSheet(u"QPushButton { background:#0a0; color:#fff; font:13px; padding:8px 20px; border-radius:4px; } QPushButton:hover { background:#0c0; } QPushButton:disabled { background:#555; }")
+        self.btnCalFront.setStyleSheet(u"QPushButton { background:#2e7d32; color:#fff; font:13px; padding:8px 20px; border-radius:4px; } QPushButton:hover { background:#43a047; } QPushButton:disabled { background:#4a4d52; color:#9a9da2; }")
         self.btnCalFront.setEnabled(False)
 
         self.ctrlFront.addWidget(self.btnCalFront)
 
         self.btnResetFront = QPushButton(self.panelFront)
         self.btnResetFront.setObjectName(u"btnResetFront")
-        self.btnResetFront.setStyleSheet(u"QPushButton { background:#a33; color:#fff; font:13px; padding:8px 20px; border-radius:4px; } QPushButton:hover { background:#c55; }")
+        self.btnResetFront.setStyleSheet(u"QPushButton { background:#c62828; color:#fff; font:13px; padding:8px 20px; border-radius:4px; } QPushButton:hover { background:#e53935; }")
 
         self.ctrlFront.addWidget(self.btnResetFront)
 
@@ -74,24 +74,24 @@ class Ui_MainWindow(object):
 
         self.infoFront = QLabel(self.panelFront)
         self.infoFront.setObjectName(u"infoFront")
-        self.infoFront.setStyleSheet(u"color: #aaa; font: 12px; padding: 2px;")
+        self.infoFront.setStyleSheet(u"color: #b8bec4; font: 12px; padding: 2px;")
 
         self.layoutFront.addWidget(self.infoFront)
 
         self.countFront = QLabel(self.panelFront)
         self.countFront.setObjectName(u"countFront")
-        self.countFront.setStyleSheet(u"color: #fa0; font: 12px; padding: 2px;")
+        self.countFront.setStyleSheet(u"color: #ffb74d; font: 12px; padding: 2px;")
 
         self.layoutFront.addWidget(self.countFront)
 
         self.resultFront = QGroupBox(self.panelFront)
         self.resultFront.setObjectName(u"resultFront")
-        self.resultFront.setStyleSheet(u"QGroupBox { font: bold 13px; color: #0f0; border: 1px solid #333; border-radius: 4px; margin-top: 8px; padding: 12px 6px 6px 6px; background: #252525; } QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 4px; }")
+        self.resultFront.setStyleSheet(u"QGroupBox { font: bold 13px; color: #69f0ae; border: 1px solid #42464c; border-radius: 4px; margin-top: 8px; padding: 12px 6px 6px 6px; background: #2b2d31; } QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 4px; }")
         self.resultLayoutFront = QVBoxLayout(self.resultFront)
         self.resultLayoutFront.setObjectName(u"resultLayoutFront")
         self.textResultFront = QLabel(self.resultFront)
         self.textResultFront.setObjectName(u"textResultFront")
-        self.textResultFront.setStyleSheet(u"color: #aaa; font: 11px monospace; padding: 2px;")
+        self.textResultFront.setStyleSheet(u"color: #b8bec4; font: 11px monospace; padding: 2px;")
         self.textResultFront.setTextInteractionFlags(Qt.TextSelectableByMouse)
 
         self.resultLayoutFront.addWidget(self.textResultFront)
@@ -109,7 +109,7 @@ class Ui_MainWindow(object):
         self.titleRear = QLabel(self.panelRear)
         self.titleRear.setObjectName(u"titleRear")
         self.titleRear.setAlignment(Qt.AlignCenter)
-        self.titleRear.setStyleSheet(u"font: bold 16px; color: #f0a; padding: 6px; background: #252525; border-radius: 4px;")
+        self.titleRear.setStyleSheet(u"font: bold 16px; color: #f48fb1; padding: 6px; background: #2b2d31; border-radius: 4px;")
 
         self.layoutRear.addWidget(self.titleRear)
 
@@ -117,7 +117,7 @@ class Ui_MainWindow(object):
         self.viewRear.setObjectName(u"viewRear")
         self.viewRear.setAlignment(Qt.AlignCenter)
         self.viewRear.setMinimumSize(QSize(480, 360))
-        self.viewRear.setStyleSheet(u"background-color: #111; color: #555; font: 18px; border: 1px solid #333; border-radius: 2px;")
+        self.viewRear.setStyleSheet(u"background-color: #16181c; color: #a8b3bc; font: 18px; border: 1px solid #42464c; border-radius: 2px;")
 
         self.layoutRear.addWidget(self.viewRear)
 
@@ -125,20 +125,20 @@ class Ui_MainWindow(object):
         self.ctrlRear.setObjectName(u"ctrlRear")
         self.btnCapRear = QPushButton(self.panelRear)
         self.btnCapRear.setObjectName(u"btnCapRear")
-        self.btnCapRear.setStyleSheet(u"QPushButton { background:#0af; color:#fff; font:13px; padding:8px 20px; border-radius:4px; } QPushButton:hover { background:#0cf; } QPushButton:disabled { background:#555; }")
+        self.btnCapRear.setStyleSheet(u"QPushButton { background:#29b6f6; color:#fff; font:13px; padding:8px 20px; border-radius:4px; } QPushButton:hover { background:#4fc3f7; } QPushButton:disabled { background:#4a4d52; color:#9a9da2; }")
 
         self.ctrlRear.addWidget(self.btnCapRear)
 
         self.btnCalRear = QPushButton(self.panelRear)
         self.btnCalRear.setObjectName(u"btnCalRear")
-        self.btnCalRear.setStyleSheet(u"QPushButton { background:#0a0; color:#fff; font:13px; padding:8px 20px; border-radius:4px; } QPushButton:hover { background:#0c0; } QPushButton:disabled { background:#555; }")
+        self.btnCalRear.setStyleSheet(u"QPushButton { background:#2e7d32; color:#fff; font:13px; padding:8px 20px; border-radius:4px; } QPushButton:hover { background:#43a047; } QPushButton:disabled { background:#4a4d52; color:#9a9da2; }")
         self.btnCalRear.setEnabled(False)
 
         self.ctrlRear.addWidget(self.btnCalRear)
 
         self.btnResetRear = QPushButton(self.panelRear)
         self.btnResetRear.setObjectName(u"btnResetRear")
-        self.btnResetRear.setStyleSheet(u"QPushButton { background:#a33; color:#fff; font:13px; padding:8px 20px; border-radius:4px; } QPushButton:hover { background:#c55; }")
+        self.btnResetRear.setStyleSheet(u"QPushButton { background:#c62828; color:#fff; font:13px; padding:8px 20px; border-radius:4px; } QPushButton:hover { background:#e53935; }")
 
         self.ctrlRear.addWidget(self.btnResetRear)
 
@@ -147,24 +147,24 @@ class Ui_MainWindow(object):
 
         self.infoRear = QLabel(self.panelRear)
         self.infoRear.setObjectName(u"infoRear")
-        self.infoRear.setStyleSheet(u"color: #aaa; font: 12px; padding: 2px;")
+        self.infoRear.setStyleSheet(u"color: #b8bec4; font: 12px; padding: 2px;")
 
         self.layoutRear.addWidget(self.infoRear)
 
         self.countRear = QLabel(self.panelRear)
         self.countRear.setObjectName(u"countRear")
-        self.countRear.setStyleSheet(u"color: #fa0; font: 12px; padding: 2px;")
+        self.countRear.setStyleSheet(u"color: #ffb74d; font: 12px; padding: 2px;")
 
         self.layoutRear.addWidget(self.countRear)
 
         self.resultRear = QGroupBox(self.panelRear)
         self.resultRear.setObjectName(u"resultRear")
-        self.resultRear.setStyleSheet(u"QGroupBox { font: bold 13px; color: #0f0; border: 1px solid #333; border-radius: 4px; margin-top: 8px; padding: 12px 6px 6px 6px; background: #252525; } QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 4px; }")
+        self.resultRear.setStyleSheet(u"QGroupBox { font: bold 13px; color: #69f0ae; border: 1px solid #42464c; border-radius: 4px; margin-top: 8px; padding: 12px 6px 6px 6px; background: #2b2d31; } QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 4px; }")
         self.resultLayoutRear = QVBoxLayout(self.resultRear)
         self.resultLayoutRear.setObjectName(u"resultLayoutRear")
         self.textResultRear = QLabel(self.resultRear)
         self.textResultRear.setObjectName(u"textResultRear")
-        self.textResultRear.setStyleSheet(u"color: #aaa; font: 11px monospace; padding: 2px;")
+        self.textResultRear.setStyleSheet(u"color: #b8bec4; font: 11px monospace; padding: 2px;")
         self.textResultRear.setTextInteractionFlags(Qt.TextSelectableByMouse)
 
         self.resultLayoutRear.addWidget(self.textResultRear)
@@ -180,7 +180,7 @@ class Ui_MainWindow(object):
         MainWindow.setCentralWidget(self.centralwidget)
         self.statusbar = QStatusBar(MainWindow)
         self.statusbar.setObjectName(u"statusbar")
-        self.statusbar.setStyleSheet(u"color: #aaa; background: #333; font: 12px;")
+        self.statusbar.setStyleSheet(u"color: #b8bec4; background: #26292d; font: 12px;")
         MainWindow.setStatusBar(self.statusbar)
 
         self.retranslateUi(MainWindow)

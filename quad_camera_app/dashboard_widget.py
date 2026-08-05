@@ -21,7 +21,7 @@ class DashboardWidget(QWidget, Ui_DashboardWidget):
         for i in range(16):
             row = QHBoxLayout()
             name = QLabel(f"M{i:02d}({MOTOR_LABELS[i]}):")
-            name.setStyleSheet("color: #888; font: 10px monospace;")
+            name.setStyleSheet("color: #a8b3bc; font: 10px monospace;")
             name.setFixedWidth(90)
             val = QLabel("-")
             val.setStyleSheet("color: #fff; font: 10px monospace;")

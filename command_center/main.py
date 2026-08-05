@@ -25,13 +25,13 @@ from viz_3d import Viz3D
 # 通用按钮基础样式（字体、内边距、圆角、最小宽度）
 STYLE_BTN = "QPushButton { font:13px; padding:8px 14px; border-radius:4px; min-width:80px; }"
 # 绿色：安全/正常动作按钮
-STYLE_OK = STYLE_BTN + "QPushButton { background:#0a0; color:#fff; } QPushButton:hover { background:#0c0; }"
+STYLE_OK = STYLE_BTN + "QPushButton { background:#2e7d32; color:#fff; } QPushButton:hover { background:#43a047; }"
 # 橙色：警告类动作按钮（如恢复、趴下）
 STYLE_WARN = STYLE_BTN + "QPushButton { background:#a60; color:#fff; } QPushButton:hover { background:#c80; }"
 # 红色：危险动作按钮（如紧急停止、被动）
-STYLE_DANGER = STYLE_BTN + "QPushButton { background:#a33; color:#fff; } QPushButton:hover { background:#c55; }"
+STYLE_DANGER = STYLE_BTN + "QPushButton { background:#c62828; color:#fff; } QPushButton:hover { background:#e53935; }"
 # 蓝色：信息类按钮（状态切换）
-STYLE_INFO = STYLE_BTN + "QPushButton { background:#0af; color:#fff; } QPushButton:hover { background:#0cf; }"
+STYLE_INFO = STYLE_BTN + "QPushButton { background:#29b6f6; color:#fff; } QPushButton:hover { background:#4fc3f7; }"
 # 紫色：特殊动作按钮（跳舞、跳跃等）
 STYLE_SPECIAL = STYLE_BTN + "QPushButton { background:#a0a; color:#fff; } QPushButton:hover { background:#c0c; }"
 
@@ -44,7 +44,7 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle("Dobot Quad 指令中心")
         self.setMinimumSize(1400, 850)
-        self.setStyleSheet("QMainWindow { background:#1e1e1e; }")
+        self.setStyleSheet("QMainWindow { background:#202225; }")
 
         central = QWidget()
         self.setCentralWidget(central)
@@ -56,8 +56,8 @@ class MainWindow(QMainWindow):
 
         # ── 机器人状态信息栏 ──
         info = QGroupBox("机器人状态")
-        info.setStyleSheet("QGroupBox { font:bold 14px; color:#0af; border:1px solid #333; border-radius:6px; "
-                           "margin-top:12px; padding-top:16px; background:#252525; } "
+        info.setStyleSheet("QGroupBox { font:bold 14px; color:#4fc3f7; border:1px solid #42464c; border-radius:6px; "
+                           "margin-top:12px; padding-top:16px; background:#2b2d31; } "
                            "QGroupBox::title { subcontrol-origin:margin; left:12px; padding:0 6px; }")
         form = QFormLayout(info)
         self.lbl_type = QLabel("-")   # 机器人类型
@@ -105,7 +105,7 @@ class MainWindow(QMainWindow):
 
         # ── 分组2：轮足专用 ──
         grp2 = QGroupBox("轮足专用")
-        grp2.setStyleSheet(info.styleSheet().replace("#0af", "#f0a"))
+        grp2.setStyleSheet(info.styleSheet().replace("#4fc3f7", "#f48fb1"))
         g2 = QGridLayout(grp2)
         g2.setSpacing(4)
         for i, (t, s) in enumerate([("轮式", "wheel_loco"), ("漂移", "drift"), ("倒立", "handstand")]):
@@ -117,13 +117,13 @@ class MainWindow(QMainWindow):
 
         # ── 分组3：运动控制 ──
         grp3 = QGroupBox("运动控制")
-        grp3.setStyleSheet(info.styleSheet().replace("#0af", "#0f0"))
+        grp3.setStyleSheet(info.styleSheet().replace("#4fc3f7", "#69f0ae"))
         g3 = QGridLayout(grp3)
         g3.setSpacing(4)
         self._dist_le = QLineEdit("1.0")   # 默认距离 1 米
-        self._dist_le.setStyleSheet("background:#333; color:#fff; padding:4px; max-width:60px;")
+        self._dist_le.setStyleSheet("background:#26292d; color:#fff; padding:4px; max-width:60px;")
         self._angle_le = QLineEdit("90")   # 默认角度 90 度
-        self._angle_le.setStyleSheet("background:#333; color:#fff; padding:4px; max-width:60px;")
+        self._angle_le.setStyleSheet("background:#26292d; color:#fff; padding:4px; max-width:60px;")
         g3.addWidget(QLabel("距离:"), 0, 0)
         g3.addWidget(self._dist_le, 0, 1)
         g3.addWidget(QLabel("角度:"), 0, 2)
@@ -146,12 +146,12 @@ class MainWindow(QMainWindow):
 
         # ── 分组4：配置 ──
         grp4 = QGroupBox("配置")
-        grp4.setStyleSheet(info.styleSheet().replace("#0af", "#fa0"))
+        grp4.setStyleSheet(info.styleSheet().replace("#4fc3f7", "#ffb74d"))
         g4 = QFormLayout(grp4)
         self._speed_spin = QSpinBox()   # 速度比调节控件
         self._speed_spin.setRange(10, 100)  # 速度比范围 [10, 100]
         self._speed_spin.setValue(50)       # 默认 50
-        self._speed_spin.setStyleSheet("background:#333; color:#fff; padding:4px;")
+        self._speed_spin.setStyleSheet("background:#26292d; color:#fff; padding:4px;")
         btn_speed = QPushButton("设置")
         btn_speed.setStyleSheet(STYLE_OK)
         btn_speed.clicked.connect(lambda: self._cmd("set_speed_ratio", self._speed_spin.value()))
@@ -183,11 +183,11 @@ class MainWindow(QMainWindow):
         # ═══════ 右侧：指令日志（可调整宽度） ═══════
         right = QWidget()
         right_layout = QVBoxLayout(right)
-        right_layout.addWidget(QLabel("指令日志", styleSheet="color:#0af; font:bold 14px; padding:4px;"))
+        right_layout.addWidget(QLabel("指令日志", styleSheet="color:#4fc3f7; font:bold 14px; padding:4px;"))
         self._log = QTextEdit()
         self._log.setReadOnly(True)
         self._log.setMinimumWidth(260)
-        self._log.setStyleSheet("background:#111; color:#0f0; font:12px monospace; border:1px solid #333;")
+        self._log.setStyleSheet("background:#101214; color:#7ee787; font:12px monospace; border:1px solid #42464c;")
         right_layout.addWidget(self._log, 1)
         main.addWidget(right, 3)
 
@@ -206,7 +206,7 @@ class MainWindow(QMainWindow):
 
         # ═══════ 状态栏 ═══════
         self._sb = QStatusBar()
-        self._sb.setStyleSheet("color:#aaa; background:#222; font:12px;")
+        self._sb.setStyleSheet("color:#b8bec4; background:#26292d; font:12px;")
         self.setStatusBar(self._sb)
 
         # ═══════ gRPC 工作线程 ═══════
@@ -270,13 +270,13 @@ class MainWindow(QMainWindow):
         self.lbl_speed.setText(str(speed))
         self.lbl_avoid.setText("已开启" if avoid else "已关闭")
         self.lbl_avoid.setStyleSheet(
-            "color:{}; font:bold 14px monospace;".format("#0f0" if avoid else "#f44")
+            "color:{}; font:bold 14px monospace;".format("#69f0ae" if avoid else "#ef5350")
         )
 
     def _on_connected(self, ok):
         """连接状态变化回调：成功时状态栏变绿"""
         if ok:
-            self._sb.setStyleSheet("color:#0f0; background:#222; font:12px;")
+            self._sb.setStyleSheet("color:#69f0ae; background:#26292d; font:12px;")
 
     def _log_msg(self, msg):
         """追加一条日志消息并滚动到底部"""

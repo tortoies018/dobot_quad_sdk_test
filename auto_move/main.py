@@ -24,8 +24,9 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Dobot Quad 自动前后移动 (IMU矫正 + 轨迹)")
-        self.setMinimumSize(1000, 700)
-        self.setStyleSheet("QMainWindow { background:#1e1e1e; }")
+        self.setMinimumSize(1180, 780)
+        self.resize(1320, 880)
+        self.setStyleSheet("QMainWindow { background:#202225; }")
 
         central = QWidget()
         self.setCentralWidget(central)
@@ -37,7 +38,7 @@ class MainWindow(QMainWindow):
 
         # ── 移动参数 ──
         grp = QGroupBox("移动参数")
-        grp.setStyleSheet(self._grp_style("#0af"))
+        grp.setStyleSheet(self._grp_style("#4fc3f7"))
         form = QFormLayout(grp)
 
         self.mode_combo = QComboBox()
@@ -64,7 +65,7 @@ class MainWindow(QMainWindow):
         rep_row.addWidget(self.rep_spin)
 
         self.infinite_check = QCheckBox("无限循环")
-        self.infinite_check.setStyleSheet("color:#fa0; font:13px;")
+        self.infinite_check.setStyleSheet("color:#ffb74d; font:13px;")
         self.infinite_check.toggled.connect(
             lambda on: self.rep_spin.setEnabled(not on))
         rep_row.addWidget(self.infinite_check)
@@ -84,15 +85,15 @@ class MainWindow(QMainWindow):
         self.speed_slider.setValue(50)
         self.speed_slider.setOrientation(Qt.Horizontal)
         self.speed_slider.setStyleSheet("""
-            QSlider::groove:horizontal { height:6px; background:#333; border-radius:3px; }
-            QSlider::handle:horizontal { width:18px; margin:-6px 0; background:#0af;
+            QSlider::groove:horizontal { height:6px; background:#3c3f44; border-radius:3px; }
+            QSlider::handle:horizontal { width:18px; margin:-6px 0; background:#29b6f6;
                                           border-radius:9px; }
         """)
         self.speed_slider.valueChanged.connect(self._on_speed_slider)
         self.speed_spin.valueChanged.connect(lambda v: self.speed_slider.setValue(v))
         speed_row.addWidget(self.speed_slider, 1)
         self.lbl_speed_val = QLabel("50")
-        self.lbl_speed_val.setStyleSheet("color:#0af; font:bold 14px; min-width:40px;")
+        self.lbl_speed_val.setStyleSheet("color:#29b6f6; font:bold 14px; min-width:40px;")
         speed_row.addWidget(self.lbl_speed_val)
         form.addRow("速度(实时):", speed_row)
 
@@ -117,7 +118,7 @@ class MainWindow(QMainWindow):
 
         # ── IMU 矫正参数 ──
         grp2 = QGroupBox("IMU 矫正")
-        grp2.setStyleSheet(self._grp_style("#0f0"))
+        grp2.setStyleSheet(self._grp_style("#69f0ae"))
         form2 = QFormLayout(grp2)
 
         self.imu_check = QCheckBox("启用 IMU 矫正")
@@ -146,13 +147,13 @@ class MainWindow(QMainWindow):
         # ── 控制按钮 ──
         btn_row = QHBoxLayout()
         self.btn_start = QPushButton("▶ 开始")
-        self.btn_start.setStyleSheet(self._btn_style("#0a0"))
+        self.btn_start.setStyleSheet(self._btn_style("#2e7d32", "#43a047"))
         self.btn_start.clicked.connect(self._start)
         btn_row.addWidget(self.btn_start)
 
         self.btn_stop = QPushButton("⏹ 停止")
         self.btn_stop.setEnabled(False)
-        self.btn_stop.setStyleSheet(self._btn_style("#a33"))
+        self.btn_stop.setStyleSheet(self._btn_style("#c62828", "#e53935"))
         self.btn_stop.clicked.connect(self._stop)
         btn_row.addWidget(self.btn_stop)
         left_layout.addLayout(btn_row)
@@ -166,7 +167,7 @@ class MainWindow(QMainWindow):
 
         # 进度
         grp3 = QGroupBox("运行状态")
-        grp3.setStyleSheet(self._grp_style("#fa0"))
+        grp3.setStyleSheet(self._grp_style("#ffb74d"))
         v3 = QVBoxLayout(grp3)
         self.lbl_stage = QLabel("待机")
         self.lbl_stage.setStyleSheet("color:#fff; font:bold 15px;")
@@ -176,43 +177,43 @@ class MainWindow(QMainWindow):
         self.progress_bar.setRange(0, 100)
         self.progress_bar.setValue(0)
         self.progress_bar.setStyleSheet("""
-            QProgressBar { background:#333; border:1px solid #555; border-radius:4px;
+            QProgressBar { background:#34373c; border:1px solid #4a4d52; border-radius:4px;
                            height:20px; text-align:center; color:#fff; }
-            QProgressBar::chunk { background:#0af; border-radius:4px; }
+            QProgressBar::chunk { background:#29b6f6; border-radius:4px; }
         """)
         v3.addWidget(self.progress_bar)
 
         self.lbl_yaw = QLabel("偏航角: —    矫正量: —")
-        self.lbl_yaw.setStyleSheet("color:#aaa; font:13px monospace;")
+        self.lbl_yaw.setStyleSheet("color:#cfd8dc; font:13px monospace;")
         v3.addWidget(self.lbl_yaw)
         right_layout.addWidget(grp3)
 
         # IMU 轨迹
         grp4 = QGroupBox("IMU 轨迹")
-        grp4.setStyleSheet(self._grp_style("#0f0"))
+        grp4.setStyleSheet(self._grp_style("#69f0ae"))
         v4 = QVBoxLayout(grp4)
         self.traj_plot = TrajectoryPlot()
         v4.addWidget(self.traj_plot, 1)
         btn_clear_traj = QPushButton("清空轨迹")
-        btn_clear_traj.setStyleSheet("QPushButton { background:#a60; color:#fff; padding:4px 12px; "
-                                     "border:1px solid #555; border-radius:4px; }"
-                                     "QPushButton:hover { background:#c80; }")
+        btn_clear_traj.setStyleSheet("QPushButton { background:#e65100; color:#fff; padding:6px 12px; "
+                                     "border:1px solid #6d6d6d; border-radius:4px; }"
+                                     "QPushButton:hover { background:#f57c00; }")
         btn_clear_traj.clicked.connect(self.traj_plot.clear)
         v4.addWidget(btn_clear_traj)
         right_layout.addWidget(grp4, 1)
 
         # 日志
-        right_layout.addWidget(QLabel("日志", styleSheet="color:#0af; font:bold 14px;"))
+        right_layout.addWidget(QLabel("日志", styleSheet="color:#4fc3f7; font:bold 14px;"))
         self._log = QTextEdit()
         self._log.setReadOnly(True)
         self._log.setMinimumHeight(150)
-        self._log.setStyleSheet("background:#111; color:#0f0; font:12px monospace; border:1px solid #333;")
+        self._log.setStyleSheet("background:#101214; color:#7ee787; font:12px monospace; border:1px solid #3a3d42;")
         right_layout.addWidget(self._log, 1)
         main.addWidget(right, 3)
 
         # ═══════ 状态栏 ═══════
         self._sb = QStatusBar()
-        self._sb.setStyleSheet("color:#aaa; background:#222; font:12px;")
+        self._sb.setStyleSheet("color:#b8bec4; background:#26292d; font:12px;")
         self.setStatusBar(self._sb)
 
         # ═══════ 工作线程 ═══════
@@ -232,20 +233,28 @@ class MainWindow(QMainWindow):
 
     @staticmethod
     def _grp_style(color):
-        return (f"QGroupBox {{ font:bold 14px; color:{color}; border:1px solid #333; "
-                f"border-radius:6px; margin-top:12px; padding-top:16px; background:#252525; }} "
+        return (f"QGroupBox {{ font:bold 14px; color:{color}; border:1px solid #42464c; "
+                f"border-radius:6px; margin-top:12px; padding-top:16px; background:#2b2d31; }} "
                 f"QGroupBox::title {{ subcontrol-origin:margin; left:12px; padding:0 6px; }}")
 
     @staticmethod
     def _input_style():
-        return "QSpinBox, QDoubleSpinBox, QComboBox { background:#333; color:#fff; padding:5px; border:1px solid #555; border-radius:4px; }"
+        return ("QSpinBox, QDoubleSpinBox, QComboBox { background:#3a3d42; color:#f5f5f5; padding:5px; "
+                "border:1px solid #55585e; border-radius:4px; }"
+                "QSpinBox:focus, QDoubleSpinBox:focus, QComboBox:focus { border:1px solid #29b6f6; }"
+                # 下拉弹出列表：深色底 + 亮色文字，避免默认白底白字看不清
+                "QComboBox QAbstractItemView { background:#2b2d31; color:#f5f5f5; "
+                "border:1px solid #55585e; outline:none; "
+                "selection-background-color:#29b6f6; selection-color:#fff; }"
+                "QComboBox QAbstractItemView::item { padding:6px 8px; }"
+                "QComboBox QAbstractItemView::item:hover { background:#3a3d42; }")
 
     @staticmethod
-    def _btn_style(color):
-        return (f"QPushButton {{ background:{color}; color:#fff; font:bold 14px; "
+    def _btn_style(base, hover):
+        return (f"QPushButton {{ background:{base}; color:#fff; font:bold 14px; "
                 f"padding:10px 20px; border-radius:5px; }} "
-                f"QPushButton:hover {{ background:#{'0c0' if color == '#0a0' else 'c55'}; }} "
-                f"QPushButton:disabled {{ background:#555; }}")
+                f"QPushButton:hover {{ background:{hover}; }} "
+                f"QPushButton:disabled {{ background:#4a4d52; color:#9a9da2; }}")
 
     # ─── 控制 ───────────────────────────────────────
 
@@ -312,7 +321,7 @@ class MainWindow(QMainWindow):
 
     def _on_connected(self, ok):
         if ok:
-            self._sb.setStyleSheet("color:#0f0; background:#222; font:12px;")
+            self._sb.setStyleSheet("color:#69f0ae; background:#26292d; font:12px;")
 
     def _on_finished(self, msg):
         """任务结束：恢复按钮"""

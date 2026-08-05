@@ -63,10 +63,10 @@ class MainWindow(QMainWindow, Ui_MainWindow):
         # 更新信息
         if detected:
             label_info.setText("✅ 检测到棋盘格")
-            label_info.setStyleSheet("color: #0f0; font: 12px; padding: 2px;")
+            label_info.setStyleSheet("color: #69f0ae; font: 12px; padding: 2px;")
         else:
             label_info.setText("❌ 未检测到棋盘格")
-            label_info.setStyleSheet("color: #f44; font: 12px; padding: 2px;")
+            label_info.setStyleSheet("color: #ef5350; font: 12px; padding: 2px;")
 
         label_count.setText(f"已捕获: {engine.frame_count} 帧")
         btn_cal.setEnabled(engine.ready_to_calibrate)

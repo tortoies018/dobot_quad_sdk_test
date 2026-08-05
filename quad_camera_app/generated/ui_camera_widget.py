@@ -22,13 +22,13 @@ class Ui_CameraWidget(object):
     def setupUi(self, CameraWidget):
         if not CameraWidget.objectName():
             CameraWidget.setObjectName(u"CameraWidget")
-        CameraWidget.setStyleSheet(u"background-color: #2a2a2a; border: 1px solid #444; border-radius: 4px;")
+        CameraWidget.setStyleSheet(u"background-color: #2b2d31; border: 1px solid #42464c; border-radius: 4px;")
         self.verticalLayout = QVBoxLayout(CameraWidget)
         self.verticalLayout.setObjectName(u"verticalLayout")
         self.verticalLayout.setContentsMargins(3, 3, 3, 3)
         self.labelTitle = QLabel(CameraWidget)
         self.labelTitle.setObjectName(u"labelTitle")
-        self.labelTitle.setStyleSheet(u"font: bold 12px; color: #0af; padding: 2px; background: transparent; border: none;")
+        self.labelTitle.setStyleSheet(u"font: bold 12px; color: #4fc3f7; padding: 2px; background: transparent; border: none;")
 
         self.verticalLayout.addWidget(self.labelTitle)
 
@@ -36,7 +36,7 @@ class Ui_CameraWidget(object):
         self.labelFrame.setObjectName(u"labelFrame")
         self.labelFrame.setAlignment(Qt.AlignCenter)
         self.labelFrame.setMinimumSize(QSize(240, 180))
-        self.labelFrame.setStyleSheet(u"background-color: #1a1a1a; color: #555; font: 14px; border: none; padding: 0px;")
+        self.labelFrame.setStyleSheet(u"background-color: #1a1d21; color: #a8b3bc; font: 14px; border: none; padding: 0px;")
 
         self.verticalLayout.addWidget(self.labelFrame)
 

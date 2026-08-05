@@ -26,10 +26,12 @@ class MainWindow(QMainWindow, Ui_MainWindow):
         source_box.addItems(CalibWorker.SOURCES)
         source_box.setCurrentText("DDS 前置 RGB")
         source_box.setStyleSheet("""
-            QComboBox { background:#333; color:#fff; padding:4px 8px;
-                        border:1px solid #555; border-radius:4px; font:13px; }
+            QComboBox { background:#26292d; color:#fff; padding:4px 8px;
+                        border:1px solid #55585e; border-radius:4px; font:13px; }
             QComboBox::drop-down { border:none; }
-            QComboBox QAbstractItemView { background:#333; color:#fff; }
+            QComboBox QAbstractItemView { background:#2b2d31; color:#f5f5f5; border:1px solid #55585e; outline:none; selection-background-color:#29b6f6; selection-color:#fff; }
+            QComboBox QAbstractItemView::item { padding:6px 8px; }
+            QComboBox QAbstractItemView::item:hover { background:#3a3d42; }
         """)
         self.controlLayout.insertWidget(0, QLabel("信号源:"))
         self.controlLayout.insertWidget(1, source_box)

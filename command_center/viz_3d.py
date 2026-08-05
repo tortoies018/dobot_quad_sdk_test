@@ -20,14 +20,14 @@ class Viz3D(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setStyleSheet("background-color: #1a1a1a;")
+        self.setStyleSheet("background-color: #1a1d21;")
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
 
         # 标题栏
         title = QLabel("  3D 位姿 / 轨迹")
-        title.setStyleSheet("color: #0af; font: bold 14px; padding: 6px; background: #222;")
+        title.setStyleSheet("color: #4fc3f7; font: bold 14px; padding: 6px; background: #26292d;")
         layout.addWidget(title)
 
         # 3D 视图
@@ -89,7 +89,7 @@ class Viz3D(QWidget):
 
         # 7. 位置标签
         self.label_pos = QLabel("位置: —  朝向: —", self)
-        self.label_pos.setStyleSheet("color: #aaa; font: 12px; padding: 4px; background: rgba(0,0,0,0.6);")
+        self.label_pos.setStyleSheet("color: #b8bec4; font: 12px; padding: 4px; background: rgba(0,0,0,0.6);")
         self.label_pos.setFixedHeight(28)
         layout.addWidget(self.label_pos)
 

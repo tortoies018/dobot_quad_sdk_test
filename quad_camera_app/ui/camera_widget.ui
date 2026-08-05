@@ -3,7 +3,7 @@
  <class>CameraWidget</class>
  <widget class="QWidget" name="CameraWidget">
   <property name="styleSheet">
-   <string notr="true">background-color: #2a2a2a; border: 1px solid #444; border-radius: 4px;</string>
+   <string notr="true">background-color: #2b2d31; border: 1px solid #42464c; border-radius: 4px;</string>
   </property>
   <layout class="QVBoxLayout" name="verticalLayout">
    <property name="leftMargin">
@@ -24,7 +24,7 @@
       <string>相机</string>
      </property>
      <property name="styleSheet">
-      <string notr="true">font: bold 12px; color: #0af; padding: 2px; background: transparent; border: none;</string>
+      <string notr="true">font: bold 12px; color: #4fc3f7; padding: 2px; background: transparent; border: none;</string>
      </property>
     </widget>
    </item>
@@ -43,7 +43,7 @@
       </size>
      </property>
      <property name="styleSheet">
-      <string notr="true">background-color: #1a1a1a; color: #555; font: 14px; border: none; padding: 0px;</string>
+      <string notr="true">background-color: #1a1d21; color: #a8b3bc; font: 14px; border: none; padding: 0px;</string>
      </property>
     </widget>
    </item>

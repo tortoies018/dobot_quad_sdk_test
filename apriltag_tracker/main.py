@@ -161,7 +161,7 @@ class TrajectoryWidget(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setMinimumSize(400, 400)
-        self.setStyleSheet("background-color: #111;")
+        self.setStyleSheet("background-color: #16181c;")
 
         self._trajectory = Trajectory()
         self._current_pos = None
@@ -172,7 +172,7 @@ class TrajectoryWidget(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
 
         self.view = gl.GLViewWidget()
-        self.view.setBackgroundColor("#1a1a1a")
+        self.view.setBackgroundColor("#1a1d21")
         self.view.setCameraPosition(distance=4000, elevation=55, azimuth=45)
         layout.addWidget(self.view)
 
@@ -231,7 +231,7 @@ class TrajectoryWidget(QWidget):
         self.view.addItem(self.curr_heading)
 
         self.info_label = QLabel("位置: —")
-        self.info_label.setStyleSheet("color:#aaa; font:12px monospace; padding:4px; background:rgba(0,0,0,0.6);")
+        self.info_label.setStyleSheet("color:#b8bec4; font:12px monospace; padding:4px; background:rgba(0,0,0,0.6);")
         layout.addWidget(self.info_label)
 
     def _make_tag_square(self):
@@ -336,23 +336,23 @@ class MainWindow(QMainWindow):
         # 清空轨迹按钮
         self.btn_clear_traj = QPushButton("清空轨迹")
         self.btn_clear_traj.setStyleSheet("QPushButton { background:#a60; color:#fff; padding:4px 12px; "
-                                          "border:1px solid #555; border-radius:4px; }"
+                                          "border:1px solid #55585e; border-radius:4px; }"
                                           "QPushButton:hover { background:#c80; }")
         self.btn_clear_traj.clicked.connect(self._clear_trajectory)
         bar1.addWidget(self.btn_clear_traj)
 
         # 录制按钮
         self.btn_record = QPushButton("⏺ 录制")
-        self.btn_record.setStyleSheet("QPushButton { background:#a33; color:#fff; padding:4px 12px; "
-                                      "border:1px solid #555; border-radius:4px; }"
-                                      "QPushButton:hover { background:#c55; }")
+        self.btn_record.setStyleSheet("QPushButton { background:#c62828; color:#fff; padding:4px 12px; "
+                                      "border:1px solid #55585e; border-radius:4px; }"
+                                      "QPushButton:hover { background:#e53935; }")
         self.btn_record.clicked.connect(self._toggle_record)
         bar1.addWidget(self.btn_record)
 
         # 加载视频按钮
         self.btn_load_video = QPushButton(" 加载视频")
-        self.btn_load_video.setStyleSheet("QPushButton { background:#333; color:#fff; padding:4px 12px; "
-                                          "border:1px solid #555; border-radius:4px; }"
+        self.btn_load_video.setStyleSheet("QPushButton { background:#26292d; color:#fff; padding:4px 12px; "
+                                          "border:1px solid #55585e; border-radius:4px; }"
                                           "QPushButton:hover { background:#444; }")
         self.btn_load_video.clicked.connect(self._load_video)
         bar1.addWidget(self.btn_load_video)
@@ -364,53 +364,53 @@ class MainWindow(QMainWindow):
         self.btn_step_back = QPushButton("⏮ 上一帧")
         self.btn_step_back.setEnabled(False)
         self.btn_step_back.setToolTip("快捷键: ← 或 Shift+←(10帧)")
-        self.btn_step_back.setStyleSheet("QPushButton { background:#333; color:#fff; padding:4px 14px; "
-                                         "border:1px solid #555; border-radius:4px; }"
+        self.btn_step_back.setStyleSheet("QPushButton { background:#26292d; color:#fff; padding:4px 14px; "
+                                         "border:1px solid #55585e; border-radius:4px; }"
                                          "QPushButton:hover { background:#444; }"
-                                         "QPushButton:disabled { background:#555; }")
+                                         "QPushButton:disabled { background:#4a4d52; color:#9a9da2; }")
         self.btn_step_back.clicked.connect(lambda: self._step_back(1))
         bar2.addWidget(self.btn_step_back)
 
         self.btn_step_back10 = QPushButton("⏪ 退10帧")
         self.btn_step_back10.setEnabled(False)
         self.btn_step_back10.clicked.connect(lambda: self._step_back(10))
-        self.btn_step_back10.setStyleSheet("QPushButton { background:#333; color:#fff; padding:4px 14px; "
-                                           "border:1px solid #555; border-radius:4px; }"
+        self.btn_step_back10.setStyleSheet("QPushButton { background:#26292d; color:#fff; padding:4px 14px; "
+                                           "border:1px solid #55585e; border-radius:4px; }"
                                            "QPushButton:hover { background:#444; }"
-                                           "QPushButton:disabled { background:#555; }")
+                                           "QPushButton:disabled { background:#4a4d52; color:#9a9da2; }")
         bar2.addWidget(self.btn_step_back10)
 
         self.btn_step_fwd = QPushButton("下一帧 ⏭")
         self.btn_step_fwd.setEnabled(False)
         self.btn_step_fwd.setToolTip("快捷键: → 或 Shift+→(10帧)")
-        self.btn_step_fwd.setStyleSheet("QPushButton { background:#333; color:#fff; padding:4px 14px; "
-                                        "border:1px solid #555; border-radius:4px; }"
+        self.btn_step_fwd.setStyleSheet("QPushButton { background:#26292d; color:#fff; padding:4px 14px; "
+                                        "border:1px solid #55585e; border-radius:4px; }"
                                         "QPushButton:hover { background:#444; }"
-                                        "QPushButton:disabled { background:#555; }")
+                                        "QPushButton:disabled { background:#4a4d52; color:#9a9da2; }")
         self.btn_step_fwd.clicked.connect(lambda: self._step_fwd(1))
         bar2.addWidget(self.btn_step_fwd)
 
         self.btn_step_fwd10 = QPushButton("进10帧 ⏩")
         self.btn_step_fwd10.setEnabled(False)
         self.btn_step_fwd10.clicked.connect(lambda: self._step_fwd(10))
-        self.btn_step_fwd10.setStyleSheet("QPushButton { background:#333; color:#fff; padding:4px 14px; "
-                                          "border:1px solid #555; border-radius:4px; }"
+        self.btn_step_fwd10.setStyleSheet("QPushButton { background:#26292d; color:#fff; padding:4px 14px; "
+                                          "border:1px solid #55585e; border-radius:4px; }"
                                           "QPushButton:hover { background:#444; }"
-                                          "QPushButton:disabled { background:#555; }")
+                                          "QPushButton:disabled { background:#4a4d52; color:#9a9da2; }")
         bar2.addWidget(self.btn_step_fwd10)
 
         self.lbl_frame = QLabel("帧: -/0")
-        self.lbl_frame.setStyleSheet("color:#aaa; font:13px monospace; padding:0 8px;")
+        self.lbl_frame.setStyleSheet("color:#b8bec4; font:13px monospace; padding:0 8px;")
         bar2.addWidget(self.lbl_frame)
 
         # 返回实时模式按钮
         self.btn_live = QPushButton("● 实时模式")
         self.btn_live.setEnabled(False)
         self.btn_live.setToolTip("停止视频查看，返回相机实时画面")
-        self.btn_live.setStyleSheet("QPushButton { background:#0af; color:#fff; padding:4px 14px; "
-                                    "border:1px solid #555; border-radius:4px; }"
-                                    "QPushButton:hover { background:#0cf; }"
-                                    "QPushButton:disabled { background:#555; }")
+        self.btn_live.setStyleSheet("QPushButton { background:#29b6f6; color:#fff; padding:4px 14px; "
+                                    "border:1px solid #55585e; border-radius:4px; }"
+                                    "QPushButton:hover { background:#4fc3f7; }"
+                                    "QPushButton:disabled { background:#4a4d52; color:#9a9da2; }")
         self.btn_live.clicked.connect(self._back_to_live)
         bar2.addWidget(self.btn_live)
 
@@ -421,25 +421,25 @@ class MainWindow(QMainWindow):
         self.label_cam = QLabel("等待相机...")
         self.label_cam.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.label_cam.setMinimumSize(480, 360)
-        self.label_cam.setStyleSheet("background:#111; color:#555; font:18px; border:1px solid #333;")
+        self.label_cam.setStyleSheet("background:#16181c; color:#a8b3bc; font:18px; border:1px solid #42464c;")
         left_layout.addWidget(self.label_cam, 1)
 
         # PnP 信息
         self.text_info = QTextEdit()
         self.text_info.setReadOnly(True)
         self.text_info.setMaximumHeight(120)
-        self.text_info.setStyleSheet("background:#1a1a1a; color:#0f0; font:12px monospace; border:1px solid #333;")
+        self.text_info.setStyleSheet("background:#1a1d21; color:#7ee787; font:12px monospace; border:1px solid #42464c;")
         left_layout.addWidget(self.text_info)
 
         # 右侧：3D 轨迹
         right = QWidget()
         right_layout = QVBoxLayout(right)
         bar_r = QHBoxLayout()
-        bar_r.addWidget(QLabel("3D 轨迹 (Tag 为原点)", styleSheet="color:#0af; font:bold 14px;"))
+        bar_r.addWidget(QLabel("3D 轨迹 (Tag 为原点)", styleSheet="color:#4fc3f7; font:bold 14px;"))
         bar_r.addStretch()
         btn_reset_view = QPushButton("重置视角")
-        btn_reset_view.setStyleSheet("QPushButton { background:#333; color:#fff; padding:4px 12px; "
-                                     "border:1px solid #555; border-radius:4px; }"
+        btn_reset_view.setStyleSheet("QPushButton { background:#26292d; color:#fff; padding:4px 12px; "
+                                     "border:1px solid #55585e; border-radius:4px; }"
                                      "QPushButton:hover { background:#444; }")
         btn_reset_view.clicked.connect(self._reset_view)
         bar_r.addWidget(btn_reset_view)
@@ -456,7 +456,7 @@ class MainWindow(QMainWindow):
         main_layout.addWidget(split)
 
         self.status = QStatusBar()
-        self.status.setStyleSheet("color:#aaa; background:#222; font:12px;")
+        self.status.setStyleSheet("color:#b8bec4; background:#26292d; font:12px;")
         self.setStatusBar(self.status)
 
         # ── DDS ───────────────────────────────────
@@ -530,8 +530,8 @@ class MainWindow(QMainWindow):
             self._video_writer = None
             self._recording = True
             self.btn_record.setText("⏹ 停止录制")
-            self.btn_record.setStyleSheet("QPushButton { background:#a33; color:#fff; padding:4px 12px; "
-                                          "border:1px solid #555; border-radius:4px; }")
+            self.btn_record.setStyleSheet("QPushButton { background:#c62828; color:#fff; padding:4px 12px; "
+                                          "border:1px solid #55585e; border-radius:4px; }")
             self.status.showMessage(f"开始录制: {path}")
         else:
             if self._video_writer:
@@ -539,9 +539,9 @@ class MainWindow(QMainWindow):
                 self._video_writer = None
             self._recording = False
             self.btn_record.setText("⏺ 录制")
-            self.btn_record.setStyleSheet("QPushButton { background:#a33; color:#fff; padding:4px 12px; "
-                                          "border:1px solid #555; border-radius:4px; }"
-                                          "QPushButton:hover { background:#c55; }")
+            self.btn_record.setStyleSheet("QPushButton { background:#c62828; color:#fff; padding:4px 12px; "
+                                          "border:1px solid #55585e; border-radius:4px; }"
+                                          "QPushButton:hover { background:#e53935; }")
             self.status.showMessage("录制已停止")
 
     # ─── 视频加载与逐帧查看 ─────────────────────────

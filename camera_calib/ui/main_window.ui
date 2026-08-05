@@ -12,7 +12,7 @@
    </size>
   </property>
   <property name="styleSheet">
-   <string notr="true">QMainWindow { background-color: #1e1e1e; }</string>
+    <string notr="true">QMainWindow { background-color: #202225; }</string>
   </property>
   <widget class="QWidget" name="centralwidget">
    <layout class="QHBoxLayout" name="mainLayout" stretch="6,4">
@@ -23,9 +23,11 @@
        <item>
         <widget class="QComboBox" name="comboCamera">
          <property name="styleSheet">
-          <string notr="true">QComboBox { background: #333; color: #fff; padding: 6px; font: 13px; border: 1px solid #555; border-radius: 4px; }
+           <string notr="true">QComboBox { background: #26292d; color: #fff; padding: 6px; font: 13px; border: 1px solid #55585e; border-radius: 4px; }
 QComboBox::drop-down { border: none; }
-QComboBox QAbstractItemView { background: #333; color: #fff; selection-background-color: #0af; }</string>
+QComboBox QAbstractItemView { background:#2b2d31; color:#f5f5f5; border:1px solid #55585e; outline:none; selection-background-color:#29b6f6; selection-color:#fff; }
+QComboBox QAbstractItemView::item { padding:6px 8px; }
+QComboBox QAbstractItemView::item:hover { background:#3a3d42; }</string>
          </property>
          <item>
           <property name="text">
@@ -54,7 +56,7 @@ QComboBox QAbstractItemView { background: #333; color: #fff; selection-backgroun
           </size>
          </property>
          <property name="styleSheet">
-          <string notr="true">background-color: #111; color: #555; font: 16px; border: 1px solid #444; border-radius: 2px; padding: 0px;</string>
+           <string notr="true">background-color: #16181c; color: #a8b3bc; font: 16px; border: 1px solid #42464c; border-radius: 2px; padding: 0px;</string>
          </property>
         </widget>
        </item>
@@ -70,7 +72,7 @@ QComboBox QAbstractItemView { background: #333; color: #fff; selection-backgroun
           </size>
          </property>
          <property name="styleSheet">
-          <string notr="true">background-color: #111; color: #aaa; font: 12px; border: 1px solid #444; padding: 4px;</string>
+           <string notr="true">background-color: #16181c; color: #b8bec4; font: 12px; border: 1px solid #42464c; padding: 4px;</string>
          </property>
         </widget>
        </item>
@@ -88,22 +90,22 @@ QComboBox QAbstractItemView { background: #333; color: #fff; selection-backgroun
           <string>控制</string>
          </property>
          <property name="styleSheet">
-          <string notr="true">QGroupBox { font: bold 14px; color: #0af; border: 1px solid #333; border-radius: 6px; margin-top: 12px; padding: 16px 8px 8px 8px; background: #252525; }
+           <string notr="true">QGroupBox { font: bold 14px; color: #4fc3f7; border: 1px solid #42464c; border-radius: 6px; margin-top: 12px; padding: 16px 8px 8px 8px; background: #2b2d31; }
 QGroupBox::title { subcontrol-origin: margin; left: 12px; padding: 0 6px; }
 QPushButton { font: 13px; padding: 8px 16px; border-radius: 4px; min-height: 36px; }</string>
          </property>
          <layout class="QHBoxLayout" name="controlLayout">
           <item><widget class="QPushButton" name="btnCapture">
            <property name="text"><string>捕获帧</string></property>
-           <property name="styleSheet"><string notr="true">QPushButton { background: #0af; color: #fff; } QPushButton:hover { background: #0cf; } QPushButton:disabled { background: #555; }</string></property>
+            <property name="styleSheet"><string notr="true">QPushButton { background: #29b6f6; color: #fff; } QPushButton:hover { background: #4fc3f7; } QPushButton:disabled { background: #4a4d52; color:#9a9da2; }</string></property>
           </widget></item>
           <item><widget class="QPushButton" name="btnCalibrate">
            <property name="text"><string>标定</string></property>
-           <property name="styleSheet"><string notr="true">QPushButton { background: #0a0; color: #fff; } QPushButton:hover { background: #0c0; } QPushButton:disabled { background: #555; }</string></property>
+            <property name="styleSheet"><string notr="true">QPushButton { background: #2e7d32; color: #fff; } QPushButton:hover { background: #43a047; } QPushButton:disabled { background: #4a4d52; color:#9a9da2; }</string></property>
           </widget></item>
           <item><widget class="QPushButton" name="btnReset">
            <property name="text"><string>重置</string></property>
-           <property name="styleSheet"><string notr="true">QPushButton { background: #a33; color: #fff; } QPushButton:hover { background: #c55; }</string></property>
+            <property name="styleSheet"><string notr="true">QPushButton { background: #c62828; color: #fff; } QPushButton:hover { background: #e53935; }</string></property>
           </widget></item>
          </layout>
         </widget>
@@ -116,15 +118,15 @@ QPushButton { font: 13px; padding: 8px 16px; border-radius: 4px; min-height: 36p
           <string>已捕获帧</string>
          </property>
          <property name="styleSheet">
-          <string notr="true">QGroupBox { font: bold 14px; color: #fa0; border: 1px solid #333; border-radius: 6px; margin-top: 12px; padding: 16px 8px 8px 8px; background: #252525; }
+           <string notr="true">QGroupBox { font: bold 14px; color: #ffb74d; border: 1px solid #42464c; border-radius: 6px; margin-top: 12px; padding: 16px 8px 8px 8px; background: #2b2d31; }
 QGroupBox::title { subcontrol-origin: margin; left: 12px; padding: 0 6px; }</string>
          </property>
          <layout class="QVBoxLayout" name="framesLayout">
           <item>
            <widget class="QListWidget" name="listFrames">
             <property name="styleSheet">
-             <string notr="true">QListWidget { background: #1a1a1a; color: #ccc; font: 12px; border: 1px solid #333; border-radius: 2px; }
-QListWidget::item { padding: 4px; } QListWidget::item:selected { background: #0af; color: #fff; }</string>
+              <string notr="true">QListWidget { background: #1a1d21; color: #e0e0e0; font: 12px; border: 1px solid #42464c; border-radius: 2px; }
+QListWidget::item { padding: 4px; } QListWidget::item:selected { background: #29b6f6; color: #fff; }</string>
             </property>
            </widget>
           </item>
@@ -139,7 +141,7 @@ QListWidget::item { padding: 4px; } QListWidget::item:selected { background: #0a
           <string>标定结果</string>
          </property>
          <property name="styleSheet">
-          <string notr="true">QGroupBox { font: bold 14px; color: #0f0; border: 1px solid #333; border-radius: 6px; margin-top: 12px; padding: 16px 8px 8px 8px; background: #252525; }
+           <string notr="true">QGroupBox { font: bold 14px; color: #69f0ae; border: 1px solid #42464c; border-radius: 6px; margin-top: 12px; padding: 16px 8px 8px 8px; background: #2b2d31; }
 QGroupBox::title { subcontrol-origin: margin; left: 12px; padding: 0 6px; }</string>
          </property>
          <layout class="QVBoxLayout" name="resultLayout">
@@ -149,7 +151,7 @@ QGroupBox::title { subcontrol-origin: margin; left: 12px; padding: 0 6px; }</str
              <string>等待标定...</string>
             </property>
             <property name="styleSheet">
-             <string notr="true">color: #aaa; font: 11px monospace; padding: 4px;</string>
+              <string notr="true">color: #b8bec4; font: 11px monospace; padding: 4px;</string>
             </property>
             <property name="textInteractionFlags">
              <set>Qt::TextSelectableByMouse</set>
@@ -180,7 +182,7 @@ QGroupBox::title { subcontrol-origin: margin; left: 12px; padding: 0 6px; }</str
   </widget>
   <widget class="QStatusBar" name="statusbar">
    <property name="styleSheet">
-    <string notr="true">color: #aaa; background: #333; font: 12px;</string>
+     <string notr="true">color: #b8bec4; background: #26292d; font: 12px;</string>
    </property>
   </widget>
  </widget>

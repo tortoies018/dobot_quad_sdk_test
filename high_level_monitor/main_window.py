@@ -35,7 +35,7 @@ class MainWindow(QMainWindow, Ui_MainWindow):
         right_split.addWidget(self._cam_view)
         right_split.setStretchFactor(0, 7)
         right_split.setStretchFactor(1, 1)
-        right_split.setStyleSheet("QSplitter::handle { background:#444; height:2px; }")
+        right_split.setStyleSheet("QSplitter::handle { background:#42464c; height:2px; }")
 
         self.mainLayout.addWidget(right_split)
         self.mainLayout.setStretch(0, 3)
@@ -67,9 +67,9 @@ class MainWindow(QMainWindow, Ui_MainWindow):
     def _on_connected(self, ok):
         self._connected = ok
         if ok:
-            self.statusbar.setStyleSheet("color: #0f0; background: #222; font: 12px;")
+            self.statusbar.setStyleSheet("color: #69f0ae; background: #26292d; font: 12px;")
         else:
-            self.statusbar.setStyleSheet("color: #f44; background: #222; font: 12px;")
+            self.statusbar.setStyleSheet("color: #ef5350; background: #26292d; font: 12px;")
 
     def _update_status_time(self):
         now = datetime.now().strftime("%H:%M:%S")

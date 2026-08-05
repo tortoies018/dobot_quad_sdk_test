@@ -25,7 +25,7 @@ class Ui_MainWindow(object):
         if not MainWindow.objectName():
             MainWindow.setObjectName(u"MainWindow")
         MainWindow.setMinimumSize(QSize(1200, 800))
-        MainWindow.setStyleSheet(u"QMainWindow { background-color: #1e1e1e; }")
+        MainWindow.setStyleSheet(u"QMainWindow { background-color: #202225; }")
         self.centralwidget = QWidget(MainWindow)
         self.centralwidget.setObjectName(u"centralwidget")
         self.mainLayout = QHBoxLayout(self.centralwidget)
@@ -38,9 +38,11 @@ class Ui_MainWindow(object):
         self.comboCamera.addItem("")
         self.comboCamera.addItem("")
         self.comboCamera.setObjectName(u"comboCamera")
-        self.comboCamera.setStyleSheet(u"QComboBox { background: #333; color: #fff; padding: 6px; font: 13px; border: 1px solid #555; border-radius: 4px; }\n"
+        self.comboCamera.setStyleSheet(u"QComboBox { background: #26292d; color: #fff; padding: 6px; font: 13px; border: 1px solid #55585e; border-radius: 4px; }\n"
 "QComboBox::drop-down { border: none; }\n"
-"QComboBox QAbstractItemView { background: #333; color: #fff; selection-background-color: #0af; }")
+"QComboBox QAbstractItemView { background:#2b2d31; color:#f5f5f5; border:1px solid #55585e; outline:none; selection-background-color:#29b6f6; selection-color:#fff; }\n"
+"QComboBox QAbstractItemView::item { padding:6px 8px; }\n"
+"QComboBox QAbstractItemView::item:hover { background:#3a3d42; }")
 
         self.leftLayout.addWidget(self.comboCamera)
 
@@ -48,14 +50,14 @@ class Ui_MainWindow(object):
         self.labelCameraView.setObjectName(u"labelCameraView")
         self.labelCameraView.setAlignment(Qt.AlignCenter)
         self.labelCameraView.setMinimumSize(QSize(480, 360))
-        self.labelCameraView.setStyleSheet(u"background-color: #111; color: #555; font: 16px; border: 1px solid #444; border-radius: 2px; padding: 0px;")
+        self.labelCameraView.setStyleSheet(u"background-color: #16181c; color: #a8b3bc; font: 16px; border: 1px solid #42464c; border-radius: 2px; padding: 0px;")
 
         self.leftLayout.addWidget(self.labelCameraView)
 
         self.labelDetectResult = QLabel(self.leftPanel)
         self.labelDetectResult.setObjectName(u"labelDetectResult")
         self.labelDetectResult.setMinimumSize(QSize(0, 0))
-        self.labelDetectResult.setStyleSheet(u"background-color: #111; color: #aaa; font: 12px; border: 1px solid #444; padding: 4px;")
+        self.labelDetectResult.setStyleSheet(u"background-color: #16181c; color: #b8bec4; font: 12px; border: 1px solid #42464c; padding: 4px;")
 
         self.leftLayout.addWidget(self.labelDetectResult)
 
@@ -68,26 +70,26 @@ class Ui_MainWindow(object):
         self.rightLayout.setObjectName(u"rightLayout")
         self.groupControl = QGroupBox(self.rightPanel)
         self.groupControl.setObjectName(u"groupControl")
-        self.groupControl.setStyleSheet(u"QGroupBox { font: bold 14px; color: #0af; border: 1px solid #333; border-radius: 6px; margin-top: 12px; padding: 16px 8px 8px 8px; background: #252525; }\n"
+        self.groupControl.setStyleSheet(u"QGroupBox { font: bold 14px; color: #4fc3f7; border: 1px solid #42464c; border-radius: 6px; margin-top: 12px; padding: 16px 8px 8px 8px; background: #2b2d31; }\n"
 "QGroupBox::title { subcontrol-origin: margin; left: 12px; padding: 0 6px; }\n"
 "QPushButton { font: 13px; padding: 8px 16px; border-radius: 4px; min-height: 36px; }")
         self.controlLayout = QHBoxLayout(self.groupControl)
         self.controlLayout.setObjectName(u"controlLayout")
         self.btnCapture = QPushButton(self.groupControl)
         self.btnCapture.setObjectName(u"btnCapture")
-        self.btnCapture.setStyleSheet(u"QPushButton { background: #0af; color: #fff; } QPushButton:hover { background: #0cf; } QPushButton:disabled { background: #555; }")
+        self.btnCapture.setStyleSheet(u"QPushButton { background: #29b6f6; color: #fff; } QPushButton:hover { background: #4fc3f7; } QPushButton:disabled { background: #4a4d52; color:#9a9da2; }")
 
         self.controlLayout.addWidget(self.btnCapture)
 
         self.btnCalibrate = QPushButton(self.groupControl)
         self.btnCalibrate.setObjectName(u"btnCalibrate")
-        self.btnCalibrate.setStyleSheet(u"QPushButton { background: #0a0; color: #fff; } QPushButton:hover { background: #0c0; } QPushButton:disabled { background: #555; }")
+        self.btnCalibrate.setStyleSheet(u"QPushButton { background: #2e7d32; color: #fff; } QPushButton:hover { background: #43a047; } QPushButton:disabled { background: #4a4d52; color:#9a9da2; }")
 
         self.controlLayout.addWidget(self.btnCalibrate)
 
         self.btnReset = QPushButton(self.groupControl)
         self.btnReset.setObjectName(u"btnReset")
-        self.btnReset.setStyleSheet(u"QPushButton { background: #a33; color: #fff; } QPushButton:hover { background: #c55; }")
+        self.btnReset.setStyleSheet(u"QPushButton { background: #c62828; color: #fff; } QPushButton:hover { background: #e53935; }")
 
         self.controlLayout.addWidget(self.btnReset)
 
@@ -96,14 +98,14 @@ class Ui_MainWindow(object):
 
         self.groupFrames = QGroupBox(self.rightPanel)
         self.groupFrames.setObjectName(u"groupFrames")
-        self.groupFrames.setStyleSheet(u"QGroupBox { font: bold 14px; color: #fa0; border: 1px solid #333; border-radius: 6px; margin-top: 12px; padding: 16px 8px 8px 8px; background: #252525; }\n"
+        self.groupFrames.setStyleSheet(u"QGroupBox { font: bold 14px; color: #ffb74d; border: 1px solid #42464c; border-radius: 6px; margin-top: 12px; padding: 16px 8px 8px 8px; background: #2b2d31; }\n"
 "QGroupBox::title { subcontrol-origin: margin; left: 12px; padding: 0 6px; }")
         self.framesLayout = QVBoxLayout(self.groupFrames)
         self.framesLayout.setObjectName(u"framesLayout")
         self.listFrames = QListWidget(self.groupFrames)
         self.listFrames.setObjectName(u"listFrames")
-        self.listFrames.setStyleSheet(u"QListWidget { background: #1a1a1a; color: #ccc; font: 12px; border: 1px solid #333; border-radius: 2px; }\n"
-"QListWidget::item { padding: 4px; } QListWidget::item:selected { background: #0af; color: #fff; }")
+        self.listFrames.setStyleSheet(u"QListWidget { background: #1a1d21; color: #e0e0e0; font: 12px; border: 1px solid #42464c; border-radius: 2px; }\n"
+"QListWidget::item { padding: 4px; } QListWidget::item:selected { background: #29b6f6; color: #fff; }")
 
         self.framesLayout.addWidget(self.listFrames)
 
@@ -112,13 +114,13 @@ class Ui_MainWindow(object):
 
         self.groupResult = QGroupBox(self.rightPanel)
         self.groupResult.setObjectName(u"groupResult")
-        self.groupResult.setStyleSheet(u"QGroupBox { font: bold 14px; color: #0f0; border: 1px solid #333; border-radius: 6px; margin-top: 12px; padding: 16px 8px 8px 8px; background: #252525; }\n"
+        self.groupResult.setStyleSheet(u"QGroupBox { font: bold 14px; color: #69f0ae; border: 1px solid #42464c; border-radius: 6px; margin-top: 12px; padding: 16px 8px 8px 8px; background: #2b2d31; }\n"
 "QGroupBox::title { subcontrol-origin: margin; left: 12px; padding: 0 6px; }")
         self.resultLayout = QVBoxLayout(self.groupResult)
         self.resultLayout.setObjectName(u"resultLayout")
         self.labelResult = QLabel(self.groupResult)
         self.labelResult.setObjectName(u"labelResult")
-        self.labelResult.setStyleSheet(u"color: #aaa; font: 11px monospace; padding: 4px;")
+        self.labelResult.setStyleSheet(u"color: #b8bec4; font: 11px monospace; padding: 4px;")
         self.labelResult.setTextInteractionFlags(Qt.TextSelectableByMouse)
 
         self.resultLayout.addWidget(self.labelResult)
@@ -138,7 +140,7 @@ class Ui_MainWindow(object):
         MainWindow.setCentralWidget(self.centralwidget)
         self.statusbar = QStatusBar(MainWindow)
         self.statusbar.setObjectName(u"statusbar")
-        self.statusbar.setStyleSheet(u"color: #aaa; background: #333; font: 12px;")
+        self.statusbar.setStyleSheet(u"color: #b8bec4; background: #26292d; font: 12px;")
         MainWindow.setStatusBar(self.statusbar)
 
         self.retranslateUi(MainWindow)

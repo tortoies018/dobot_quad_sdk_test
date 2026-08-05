@@ -28,12 +28,12 @@ class Ui_DataPanel(object):
         self.rootLayout.setContentsMargins(6, 6, 6, 6)
         self.groupInfo = QGroupBox(DataPanel)
         self.groupInfo.setObjectName(u"groupInfo")
-        self.groupInfo.setStyleSheet(u"QGroupBox { font: bold 14px; color: #0af; border: 1px solid #333; border-radius: 6px; margin-top: 12px; padding-top: 16px; background: #252525; } QGroupBox::title { subcontrol-origin: margin; left: 12px; padding: 0 6px; }")
+        self.groupInfo.setStyleSheet(u"QGroupBox { font: bold 14px; color: #4fc3f7; border: 1px solid #42464c; border-radius: 6px; margin-top: 12px; padding-top: 16px; background: #2b2d31; } QGroupBox::title { subcontrol-origin: margin; left: 12px; padding: 0 6px; }")
         self.infoGrid = QGridLayout(self.groupInfo)
         self.infoGrid.setObjectName(u"infoGrid")
         self.lblRobotTypeTitle = QLabel(self.groupInfo)
         self.lblRobotTypeTitle.setObjectName(u"lblRobotTypeTitle")
-        self.lblRobotTypeTitle.setStyleSheet(u"color: #888; font: 12px;")
+        self.lblRobotTypeTitle.setStyleSheet(u"color: #a8b3bc; font: 12px;")
 
         self.infoGrid.addWidget(self.lblRobotTypeTitle, 0, 0, 1, 1)
 
@@ -45,19 +45,19 @@ class Ui_DataPanel(object):
 
         self.lblFSMTitle = QLabel(self.groupInfo)
         self.lblFSMTitle.setObjectName(u"lblFSMTitle")
-        self.lblFSMTitle.setStyleSheet(u"color: #888; font: 12px;")
+        self.lblFSMTitle.setStyleSheet(u"color: #a8b3bc; font: 12px;")
 
         self.infoGrid.addWidget(self.lblFSMTitle, 0, 2, 1, 1)
 
         self.valFSM = QLabel(self.groupInfo)
         self.valFSM.setObjectName(u"valFSM")
-        self.valFSM.setStyleSheet(u"color: #0f0; font: bold 14px; font-family: monospace;")
+        self.valFSM.setStyleSheet(u"color: #69f0ae; font: bold 14px; font-family: monospace;")
 
         self.infoGrid.addWidget(self.valFSM, 0, 3, 1, 1)
 
         self.lblSpeedTitle = QLabel(self.groupInfo)
         self.lblSpeedTitle.setObjectName(u"lblSpeedTitle")
-        self.lblSpeedTitle.setStyleSheet(u"color: #888; font: 12px;")
+        self.lblSpeedTitle.setStyleSheet(u"color: #a8b3bc; font: 12px;")
 
         self.infoGrid.addWidget(self.lblSpeedTitle, 1, 0, 1, 1)
 
@@ -69,7 +69,7 @@ class Ui_DataPanel(object):
 
         self.lblAvoidTitle = QLabel(self.groupInfo)
         self.lblAvoidTitle.setObjectName(u"lblAvoidTitle")
-        self.lblAvoidTitle.setStyleSheet(u"color: #888; font: 12px;")
+        self.lblAvoidTitle.setStyleSheet(u"color: #a8b3bc; font: 12px;")
 
         self.infoGrid.addWidget(self.lblAvoidTitle, 1, 2, 1, 1)
 
@@ -84,12 +84,12 @@ class Ui_DataPanel(object):
 
         self.groupPose = QGroupBox(DataPanel)
         self.groupPose.setObjectName(u"groupPose")
-        self.groupPose.setStyleSheet(u"QGroupBox { font: bold 14px; color: #fa0; border: 1px solid #333; border-radius: 6px; margin-top: 12px; padding-top: 16px; background: #252525; } QGroupBox::title { subcontrol-origin: margin; left: 12px; padding: 0 6px; }")
+        self.groupPose.setStyleSheet(u"QGroupBox { font: bold 14px; color: #ffb74d; border: 1px solid #42464c; border-radius: 6px; margin-top: 12px; padding-top: 16px; background: #2b2d31; } QGroupBox::title { subcontrol-origin: margin; left: 12px; padding: 0 6px; }")
         self.poseGrid = QGridLayout(self.groupPose)
         self.poseGrid.setObjectName(u"poseGrid")
         self.lblPosTitle = QLabel(self.groupPose)
         self.lblPosTitle.setObjectName(u"lblPosTitle")
-        self.lblPosTitle.setStyleSheet(u"color: #888; font: 12px;")
+        self.lblPosTitle.setStyleSheet(u"color: #a8b3bc; font: 12px;")
 
         self.poseGrid.addWidget(self.lblPosTitle, 0, 0, 1, 1)
 
@@ -101,7 +101,7 @@ class Ui_DataPanel(object):
 
         self.lblVelTitle = QLabel(self.groupPose)
         self.lblVelTitle.setObjectName(u"lblVelTitle")
-        self.lblVelTitle.setStyleSheet(u"color: #888; font: 12px;")
+        self.lblVelTitle.setStyleSheet(u"color: #a8b3bc; font: 12px;")
 
         self.poseGrid.addWidget(self.lblVelTitle, 1, 0, 1, 1)
 
@@ -113,7 +113,7 @@ class Ui_DataPanel(object):
 
         self.lblAccelTitle = QLabel(self.groupPose)
         self.lblAccelTitle.setObjectName(u"lblAccelTitle")
-        self.lblAccelTitle.setStyleSheet(u"color: #888; font: 12px;")
+        self.lblAccelTitle.setStyleSheet(u"color: #a8b3bc; font: 12px;")
 
         self.poseGrid.addWidget(self.lblAccelTitle, 2, 0, 1, 1)
 
@@ -125,7 +125,7 @@ class Ui_DataPanel(object):
 
         self.lblOmegaTitle = QLabel(self.groupPose)
         self.lblOmegaTitle.setObjectName(u"lblOmegaTitle")
-        self.lblOmegaTitle.setStyleSheet(u"color: #888; font: 12px;")
+        self.lblOmegaTitle.setStyleSheet(u"color: #a8b3bc; font: 12px;")
 
         self.poseGrid.addWidget(self.lblOmegaTitle, 3, 0, 1, 1)
 
@@ -137,7 +137,7 @@ class Ui_DataPanel(object):
 
         self.lblRPYTitle = QLabel(self.groupPose)
         self.lblRPYTitle.setObjectName(u"lblRPYTitle")
-        self.lblRPYTitle.setStyleSheet(u"color: #888; font: 12px;")
+        self.lblRPYTitle.setStyleSheet(u"color: #a8b3bc; font: 12px;")
 
         self.poseGrid.addWidget(self.lblRPYTitle, 4, 0, 1, 1)
 
@@ -152,7 +152,7 @@ class Ui_DataPanel(object):
 
         self.groupJoints = QGroupBox(DataPanel)
         self.groupJoints.setObjectName(u"groupJoints")
-        self.groupJoints.setStyleSheet(u"QGroupBox { font: bold 14px; color: #0f0; border: 1px solid #333; border-radius: 6px; margin-top: 12px; padding-top: 16px; background: #252525; } QGroupBox::title { subcontrol-origin: margin; left: 12px; padding: 0 6px; }")
+        self.groupJoints.setStyleSheet(u"QGroupBox { font: bold 14px; color: #69f0ae; border: 1px solid #42464c; border-radius: 6px; margin-top: 12px; padding-top: 16px; background: #2b2d31; } QGroupBox::title { subcontrol-origin: margin; left: 12px; padding: 0 6px; }")
         self.jointListLayout = QVBoxLayout(self.groupJoints)
         self.jointListLayout.setObjectName(u"jointListLayout")
 
@@ -160,12 +160,12 @@ class Ui_DataPanel(object):
 
         self.groupGRF = QGroupBox(DataPanel)
         self.groupGRF.setObjectName(u"groupGRF")
-        self.groupGRF.setStyleSheet(u"QGroupBox { font: bold 14px; color: #f0a; border: 1px solid #333; border-radius: 6px; margin-top: 12px; padding-top: 16px; background: #252525; } QGroupBox::title { subcontrol-origin: margin; left: 12px; padding: 0 6px; }")
+        self.groupGRF.setStyleSheet(u"QGroupBox { font: bold 14px; color: #f48fb1; border: 1px solid #42464c; border-radius: 6px; margin-top: 12px; padding-top: 16px; background: #2b2d31; } QGroupBox::title { subcontrol-origin: margin; left: 12px; padding: 0 6px; }")
         self.grfLayout = QFormLayout(self.groupGRF)
         self.grfLayout.setObjectName(u"grfLayout")
         self.lblGRFLeft = QLabel(self.groupGRF)
         self.lblGRFLeft.setObjectName(u"lblGRFLeft")
-        self.lblGRFLeft.setStyleSheet(u"color: #888; font: 12px;")
+        self.lblGRFLeft.setStyleSheet(u"color: #a8b3bc; font: 12px;")
 
         self.grfLayout.setWidget(0, QFormLayout.ItemRole.LabelRole, self.lblGRFLeft)
 
@@ -177,7 +177,7 @@ class Ui_DataPanel(object):
 
         self.lblGRFRight = QLabel(self.groupGRF)
         self.lblGRFRight.setObjectName(u"lblGRFRight")
-        self.lblGRFRight.setStyleSheet(u"color: #888; font: 12px;")
+        self.lblGRFRight.setStyleSheet(u"color: #a8b3bc; font: 12px;")
 
         self.grfLayout.setWidget(1, QFormLayout.ItemRole.LabelRole, self.lblGRFRight)
 
@@ -189,7 +189,7 @@ class Ui_DataPanel(object):
 
         self.lblGRFFiltered = QLabel(self.groupGRF)
         self.lblGRFFiltered.setObjectName(u"lblGRFFiltered")
-        self.lblGRFFiltered.setStyleSheet(u"color: #888; font: 12px;")
+        self.lblGRFFiltered.setStyleSheet(u"color: #a8b3bc; font: 12px;")
 
         self.grfLayout.setWidget(2, QFormLayout.ItemRole.LabelRole, self.lblGRFFiltered)
 

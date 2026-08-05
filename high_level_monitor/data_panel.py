@@ -28,7 +28,7 @@ class DataPanel(QWidget, Ui_DataPanel):
         for i in range(16):
             row = QHBoxLayout()
             name = QLabel(f"M{i:02d} [{JOINT_NAMES[i]}]")
-            name.setStyleSheet("color: #888; font: 11px monospace;")
+            name.setStyleSheet("color: #a8b3bc; font: 11px monospace;")
             name.setFixedWidth(100)
             # 位置 / 速度 / 力矩
             val = QLabel("—   —   —")
@@ -54,10 +54,10 @@ class DataPanel(QWidget, Ui_DataPanel):
 
         if obstacle_avoid:
             self.valAvoid.setText("已开启")
-            self.valAvoid.setStyleSheet("color: #0f0; font: bold 14px monospace;")
+            self.valAvoid.setStyleSheet("color: #69f0ae; font: bold 14px monospace;")
         else:
             self.valAvoid.setText("已关闭")
-            self.valAvoid.setStyleSheet("color: #f44; font: bold 14px monospace;")
+            self.valAvoid.setStyleSheet("color: #ef5350; font: bold 14px monospace;")
 
     def update_pose(self, pos, vel, accel, omega, rpy):
         """更新机体位姿面板"""

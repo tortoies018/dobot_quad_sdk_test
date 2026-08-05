@@ -10,14 +10,14 @@ class CameraView(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setStyleSheet("background-color: #1a1a1a;")
+        self.setStyleSheet("background-color: #1a1d21;")
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(2)
 
         title = QLabel("  四相机")
-        title.setStyleSheet("color: #0af; font: bold 14px; padding: 4px; background: #222;")
+        title.setStyleSheet("color: #4fc3f7; font: bold 14px; padding: 4px; background: #26292d;")
         layout.addWidget(title)
 
         grid = QGridLayout()
@@ -28,7 +28,7 @@ class CameraView(QWidget):
             lbl = QLabel("等待...")
             lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
             lbl.setMinimumSize(160, 120)
-            lbl.setStyleSheet("background-color: #111; color: #555; font: 12px; border: 1px solid #333;")
+            lbl.setStyleSheet("background-color: #16181c; color: #a8b3bc; font: 12px; border: 1px solid #42464c;")
             row, col = divmod(i, 2)
             grid.addWidget(lbl, row, col)
             self._labels.append(lbl)

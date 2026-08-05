@@ -23,7 +23,7 @@ class Ui_MainWindow(object):
         if not MainWindow.objectName():
             MainWindow.setObjectName(u"MainWindow")
         MainWindow.setMinimumSize(QSize(1100, 750))
-        MainWindow.setStyleSheet(u"QMainWindow { background-color: #1e1e1e; }")
+        MainWindow.setStyleSheet(u"QMainWindow { background-color: #202225; }")
         self.centralwidget = QWidget(MainWindow)
         self.centralwidget.setObjectName(u"centralwidget")
         self.mainLayout = QHBoxLayout(self.centralwidget)
@@ -43,7 +43,7 @@ class Ui_MainWindow(object):
         MainWindow.setCentralWidget(self.centralwidget)
         self.statusbar = QStatusBar(MainWindow)
         self.statusbar.setObjectName(u"statusbar")
-        self.statusbar.setStyleSheet(u"color: #0af; background: #222; font: 12px;")
+        self.statusbar.setStyleSheet(u"color: #4fc3f7; background: #26292d; font: 12px;")
         MainWindow.setStatusBar(self.statusbar)
 
         self.retranslateUi(MainWindow)

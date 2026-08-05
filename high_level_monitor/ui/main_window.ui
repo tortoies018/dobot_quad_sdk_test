@@ -12,7 +12,7 @@
    </size>
   </property>
   <property name="styleSheet">
-   <string notr="true">QMainWindow { background-color: #1e1e1e; }</string>
+   <string notr="true">QMainWindow { background-color: #202225; }</string>
   </property>
   <widget class="QWidget" name="centralwidget">
    <layout class="QHBoxLayout" name="mainLayout">
@@ -33,7 +33,7 @@
   </widget>
   <widget class="QStatusBar" name="statusbar">
    <property name="styleSheet">
-    <string notr="true">color: #0af; background: #222; font: 12px;</string>
+    <string notr="true">color: #4fc3f7; background: #26292d; font: 12px;</string>
    </property>
   </widget>
  </widget>
