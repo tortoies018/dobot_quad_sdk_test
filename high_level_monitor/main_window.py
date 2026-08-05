@@ -42,7 +42,7 @@ class MainWindow(QMainWindow, Ui_MainWindow):
         self.mainLayout.setStretch(1, 7)
 
         # ---- gRPC 轮询 ----
-        self._poller = RobotPoller(addr="192.168.1.6:50051", interval=0.2)
+        self._poller = RobotPoller(addr="10.30.12.196:50051", interval=0.2)
         self._poller.info_ready.connect(self._panel.update_info)
         self._poller.pose_ready.connect(self._panel.update_pose)
         self._poller.pose_ready.connect(self._viz3d.update_pose)

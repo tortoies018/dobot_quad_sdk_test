@@ -186,36 +186,42 @@ class TrajectoryPlot3D(gl.GLViewWidget):
         minor_step = max(0.2, round(major_step / 5, 1))
         self._draw_grid(float(total_size), major_step, minor_step, cx, cy)
 
-    # ─── Blender 式交互 ───────────────────────────────────────────
+    # ─── Godot 式交互 ────────────────────────────────────────────
 
     def mousePressEvent(self, ev):
         self._last_mouse_pos = ev.position()
         self._drag_button = ev.button()
-        if ev.button() == Qt.MiddleButton:
+        if ev.button() in (Qt.LeftButton, Qt.MiddleButton, Qt.RightButton):
             ev.accept()
         else:
             super().mousePressEvent(ev)
 
     def mouseMoveEvent(self, ev):
-        if self._drag_button != Qt.MiddleButton or self._last_mouse_pos is None:
+        if self._last_mouse_pos is None:
             super().mouseMoveEvent(ev)
             return
 
         delta = ev.position() - self._last_mouse_pos
         self._last_mouse_pos = ev.position()
 
-        if ev.modifiers() & Qt.ShiftModifier:
-            # Shift + 中键 = 平移
+        if self._drag_button == Qt.RightButton:
+            # 右键 = 环绕
+            self.orbit(-delta.x() * 0.4, delta.y() * 0.4)
+        elif self._drag_button == Qt.LeftButton:
+            # 左键 = 平移
             dist = max(0.1, self.opts.get("distance", 6.0))
             self.pan(
-                -delta.x() * 0.005 * dist,
-                delta.y() * 0.005 * dist,
+                delta.x() * 0.02 * dist,
+                delta.y() * 0.02 * dist,
                 0,
                 relative="view",
             )
-        else:
-            # 中键 = 环绕
+        elif self._drag_button == Qt.MiddleButton:
+            # 中键 = 环绕（兼容）
             self.orbit(-delta.x() * 0.4, delta.y() * 0.4)
+        else:
+            super().mouseMoveEvent(ev)
+            return
         ev.accept()
 
     def mouseReleaseEvent(self, ev):

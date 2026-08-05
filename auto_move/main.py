@@ -169,6 +169,24 @@ class MainWindow(QMainWindow):
         btn_row.addWidget(self.btn_stop)
         left_layout.addLayout(btn_row)
 
+        # ── 状态列表 ──
+        grp_status = QGroupBox("状态")
+        grp_status.setStyleSheet(self._grp_style("#ffb74d"))
+        form_status = QFormLayout(grp_status)
+        self.lbl_status_conn = QLabel("未连接")
+        self.lbl_status_conn.setStyleSheet("color:#e0e0e0; font:13px monospace;")
+        form_status.addRow("连接状态:", self.lbl_status_conn)
+        self.lbl_status_pos = QLabel("—")
+        self.lbl_status_pos.setStyleSheet("color:#e0e0e0; font:13px monospace;")
+        form_status.addRow("当前位置:", self.lbl_status_pos)
+        self.lbl_status_yaw = QLabel("—")
+        self.lbl_status_yaw.setStyleSheet("color:#e0e0e0; font:13px monospace;")
+        form_status.addRow("偏航角:", self.lbl_status_yaw)
+        self.lbl_status_corr = QLabel("—")
+        self.lbl_status_corr.setStyleSheet("color:#e0e0e0; font:13px monospace;")
+        form_status.addRow("矫正量:", self.lbl_status_corr)
+        left_layout.addWidget(grp_status)
+
         left_layout.addStretch()
         main.addWidget(left, 2)
 
@@ -211,7 +229,7 @@ class MainWindow(QMainWindow):
                                      "QPushButton:hover { background:#f57c00; }")
         btn_clear_traj.clicked.connect(self.traj_plot.clear)
         v4.addWidget(btn_clear_traj)
-        hint = QLabel("中键旋转 | Shift+中键平移 | 滚轮缩放 | R 重置")
+        hint = QLabel("左键平移 | 右键旋转 | 滚轮缩放 | R 重置")
         hint.setStyleSheet("color:#888; font:11px;")
         hint.setAlignment(Qt.AlignCenter)
         v4.addWidget(hint)
@@ -241,8 +259,9 @@ class MainWindow(QMainWindow):
         self._running = False
 
     def _on_pos(self, x, y, z):
-        """收到 IMU 位置：添加到 3D 轨迹图"""
+        """收到 IMU 位置：添加到 3D 轨迹图并更新状态列表"""
         self.traj_plot.add_point(x, y, z)
+        self.lbl_status_pos.setText(f"{x:.3f}, {y:.3f}, {z:.3f}")
 
     # ─── 样式辅助 ───────────────────────────────────
 
@@ -304,6 +323,7 @@ class MainWindow(QMainWindow):
         self.addr_edit.setEnabled(False)
         self.progress_bar.setValue(0)
         self.lbl_stage.setText("连接中...")
+        self.lbl_status_conn.setText("连接中...")
         self.traj_plot.clear()   # 每次启动清空轨迹
         self._log_msg("─" * 40)
         loop_txt = "无限" if self.infinite_check.isChecked() else f"{self.rep_spin.value()}次"
@@ -342,10 +362,17 @@ class MainWindow(QMainWindow):
             self.progress_bar.setRange(0, 0)   # 不定进度条
             self.progress_bar.setFormat(f"∞ 已循环 {cycle} 次")
         self.lbl_yaw.setText(f"偏航角: {yaw:.2f}°    矫正量: {corr:.2f}°")
+        self.lbl_status_yaw.setText(f"{yaw:.2f}°")
+        self.lbl_status_corr.setText(f"{corr:.2f}°")
 
     def _on_connected(self, ok):
         if ok:
             self._sb.setStyleSheet("color:#69f0ae; background:#26292d; font:12px;")
+            self.lbl_status_conn.setText("已连接")
+            self.lbl_status_conn.setStyleSheet("color:#69f0ae; font:13px monospace;")
+        else:
+            self.lbl_status_conn.setText("未连接")
+            self.lbl_status_conn.setStyleSheet("color:#ef5350; font:13px monospace;")
 
     def _on_finished(self, msg):
         """任务结束：恢复按钮"""
@@ -354,6 +381,10 @@ class MainWindow(QMainWindow):
         self.btn_stop.setEnabled(False)
         self.addr_edit.setEnabled(True)
         self.lbl_stage.setText("完成" if "完成" in msg else "停止")
+        self.lbl_status_conn.setText("待机")
+        self.lbl_status_conn.setStyleSheet("color:#e0e0e0; font:13px monospace;")
+        self.lbl_status_yaw.setText("—")
+        self.lbl_status_corr.setText("—")
         # 恢复进度条为有限循环模式
         self.progress_bar.setRange(0, 100)
         self.progress_bar.setValue(0)

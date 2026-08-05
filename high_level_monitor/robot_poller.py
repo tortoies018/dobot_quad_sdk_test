@@ -21,7 +21,7 @@ class RobotPoller(QThread):
     status_msg = Signal(str)                        # 状态栏消息
     connected = Signal(bool)                        # 连接状态变化
 
-    def __init__(self, addr="192.168.1.6:50051", interval=0.2, parent=None):
+    def __init__(self, addr="10.30.12.196:50051", interval=0.2, parent=None):
         """
         :param addr:     gRPC 服务地址
         :param interval: 轮询间隔（秒）
