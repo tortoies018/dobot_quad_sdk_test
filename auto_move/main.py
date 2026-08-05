@@ -1,6 +1,6 @@
 """
 自动前后移动控制程序——设置移动距离、循环次数等参数，
-驱动机器人往复运动，并用 IMU 数据实时矫正航向漂移。
+驱动机器人往复运动。
 """
 
 import sys
@@ -23,7 +23,7 @@ class MainWindow(QMainWindow):
 
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Dobot Quad 自动前后移动 (IMU矫正 + 3D轨迹)")
+        self.setWindowTitle("Dobot Quad 自动前后移动 (3D轨迹)")
         self.setMinimumSize(1180, 780)
         self.resize(1320, 880)
         self.setStyleSheet("QMainWindow { background:#202225; }")
@@ -108,15 +108,6 @@ class MainWindow(QMainWindow):
         speed_row.addWidget(self.lbl_speed_val)
         form.addRow("速度(实时):", speed_row)
 
-        self.seg_spin = QDoubleSpinBox()
-        self.seg_spin.setRange(0.1, 1.0)
-        self.seg_spin.setDecimals(1)
-        self.seg_spin.setValue(0.3)
-        self.seg_spin.setSuffix(" m")
-        self.seg_spin.setToolTip("每移动一小段即用 IMU 实时矫正（闭环控制）")
-        self.seg_spin.setStyleSheet(self._input_style())
-        form.addRow("分段长度:", self.seg_spin)
-
         self.settle_spin = QDoubleSpinBox()
         self.settle_spin.setRange(0.1, 5.0)
         self.settle_spin.setDecimals(1)
@@ -126,34 +117,6 @@ class MainWindow(QMainWindow):
         form.addRow("稳定等待:", self.settle_spin)
 
         left_layout.addWidget(grp)
-
-        # ── IMU 矫正参数 ──
-        grp2 = QGroupBox("IMU 矫正")
-        grp2.setStyleSheet(self._grp_style("#69f0ae"))
-        form2 = QFormLayout(grp2)
-
-        self.imu_check = QCheckBox("启用 IMU 矫正")
-        self.imu_check.setChecked(True)
-        self.imu_check.setStyleSheet("color:#fff; font:13px;")
-        form2.addRow(self.imu_check)
-
-        self.thresh_spin = QDoubleSpinBox()
-        self.thresh_spin.setRange(0.5, 30.0)
-        self.thresh_spin.setDecimals(1)
-        self.thresh_spin.setValue(3.0)
-        self.thresh_spin.setSuffix(" °")
-        self.thresh_spin.setStyleSheet(self._input_style())
-        form2.addRow("矫正阈值:", self.thresh_spin)
-
-        self.gain_spin = QDoubleSpinBox()
-        self.gain_spin.setRange(0.1, 1.0)
-        self.gain_spin.setDecimals(1)
-        self.gain_spin.setValue(0.7)
-        self.gain_spin.setToolTip("每次转向纠正误差的比例（0.7=转误差的70%，留余量防过冲）")
-        self.gain_spin.setStyleSheet(self._input_style())
-        form2.addRow("转向增益:", self.gain_spin)
-
-        left_layout.addWidget(grp2)
 
         # ── 控制按钮 ──
         btn_row = QHBoxLayout()
@@ -179,24 +142,9 @@ class MainWindow(QMainWindow):
         self.lbl_status_pos = QLabel("—")
         self.lbl_status_pos.setStyleSheet("color:#e0e0e0; font:13px monospace;")
         form_status.addRow("当前位置:", self.lbl_status_pos)
-        self.lbl_status_quat = QLabel("—")
-        self.lbl_status_quat.setStyleSheet("color:#e0e0e0; font:13px monospace;")
-        form_status.addRow("四元数:", self.lbl_status_quat)
-        self.lbl_status_gyro = QLabel("—")
-        self.lbl_status_gyro.setStyleSheet("color:#e0e0e0; font:13px monospace;")
-        form_status.addRow("陀螺仪(rad/s):", self.lbl_status_gyro)
-        self.lbl_status_accel = QLabel("—")
-        self.lbl_status_accel.setStyleSheet("color:#e0e0e0; font:13px monospace;")
-        form_status.addRow("加速度(m/s²):", self.lbl_status_accel)
         self.lbl_status_rpy = QLabel("—")
         self.lbl_status_rpy.setStyleSheet("color:#e0e0e0; font:13px monospace;")
         form_status.addRow("欧拉角(rad):", self.lbl_status_rpy)
-        self.lbl_status_yaw = QLabel("—")
-        self.lbl_status_yaw.setStyleSheet("color:#e0e0e0; font:13px monospace;")
-        form_status.addRow("偏航角:", self.lbl_status_yaw)
-        self.lbl_status_corr = QLabel("—")
-        self.lbl_status_corr.setStyleSheet("color:#e0e0e0; font:13px monospace;")
-        form_status.addRow("矫正量:", self.lbl_status_corr)
         left_layout.addWidget(grp_status)
 
         left_layout.addStretch()
@@ -223,10 +171,6 @@ class MainWindow(QMainWindow):
             QProgressBar::chunk { background:#29b6f6; border-radius:4px; }
         """)
         v3.addWidget(self.progress_bar)
-
-        self.lbl_yaw = QLabel("偏航角: —    矫正量: —")
-        self.lbl_yaw.setStyleSheet("color:#cfd8dc; font:13px monospace;")
-        v3.addWidget(self.lbl_yaw)
         right_layout.addWidget(grp3)
 
         # IMU 3D 轨迹
@@ -276,24 +220,12 @@ class MainWindow(QMainWindow):
         self.traj_plot.add_point(x, y, z)
 
     def _on_imu_data(self, data):
-        """收到完整 IMU 数据：更新状态列表和 3D 坐标轴"""
+        """收到 IMU 数据：更新状态列表和 3D 坐标轴"""
         pos = data.get("pos", [0.0, 0.0, 0.0])
-        quat = data.get("quat", [1.0, 0.0, 0.0, 0.0])
-        gyro = data.get("gyro", [0.0, 0.0, 0.0])
-        accel = data.get("accel", [0.0, 0.0, 0.0])
         rpy = data.get("rpy", [0.0, 0.0, 0.0])
         rpy_abs = data.get("rpy_abs", rpy)
 
         self.lbl_status_pos.setText(f"{pos[0]:.3f}, {pos[1]:.3f}, {pos[2]:.3f}")
-        self.lbl_status_quat.setText(
-            f"w={quat[0]:.3f} x={quat[1]:.3f} y={quat[2]:.3f} z={quat[3]:.3f}"
-        )
-        self.lbl_status_gyro.setText(
-            f"{gyro[0]:.3f}, {gyro[1]:.3f}, {gyro[2]:.3f}"
-        )
-        self.lbl_status_accel.setText(
-            f"{accel[0]:.3f}, {accel[1]:.3f}, {accel[2]:.3f}"
-        )
         self.lbl_status_rpy.setText(
             f"r={rpy_abs[0]:.3f} p={rpy_abs[1]:.3f} y={rpy_abs[2]:.3f}"
         )
@@ -346,14 +278,10 @@ class MainWindow(QMainWindow):
         # 同步参数到工作线程
         self._worker.mode = ["back_and_forth", "forward_only", "backward_only"][self.mode_combo.currentIndex()]
         self._worker.distance = self.dist_spin.value()
-        self._worker.segment = self.seg_spin.value()
         self._worker.repetitions = self.rep_spin.value()
         self._worker.infinite = self.infinite_check.isChecked()
         self._worker.speed_ratio = self.speed_spin.value()
         self._worker.settle_time = self.settle_spin.value()
-        self._worker.use_imu = self.imu_check.isChecked()
-        self._worker.yaw_threshold = self.thresh_spin.value()
-        self._worker.turn_gain = self.gain_spin.value()
 
         self._running = True
         self.btn_start.setEnabled(False)
@@ -366,9 +294,7 @@ class MainWindow(QMainWindow):
         self._log_msg("─" * 40)
         loop_txt = "无限" if self.infinite_check.isChecked() else f"{self.rep_spin.value()}次"
         self._log_msg(f"[{self._ts()}] [INFO] 启动: 地址={addr} 模式={self.mode_combo.currentText()} "
-                      f"距离={self.dist_spin.value()}m 分段={self.seg_spin.value()}m "
-                      f"循环={loop_txt} 速度={self.speed_spin.value()} "
-                      f"IMU矫正={'开' if self.imu_check.isChecked() else '关'}")
+                      f"距离={self.dist_spin.value()}m 循环={loop_txt} 速度={self.speed_spin.value()}")
         self._worker.start()
 
     def _on_speed_slider(self, val):
@@ -386,8 +312,8 @@ class MainWindow(QMainWindow):
 
     # ─── 信号回调 ───────────────────────────────────
 
-    def _on_progress(self, cycle, total, stage, yaw, corr):
-        """更新进度、阶段和偏航信息（total=0 表示无限循环）"""
+    def _on_progress(self, cycle, total, stage):
+        """更新进度和阶段（total=0 表示无限循环）"""
         if total > 0:
             # 有限循环：进度条显示当前/总数
             self.lbl_stage.setText(f"{stage}")
@@ -399,9 +325,6 @@ class MainWindow(QMainWindow):
             self.lbl_stage.setText(f"{stage}  (第 {cycle} 次)")
             self.progress_bar.setRange(0, 0)   # 不定进度条
             self.progress_bar.setFormat(f"∞ 已循环 {cycle} 次")
-        self.lbl_yaw.setText(f"偏航角: {yaw:.2f}°    矫正量: {corr:.2f}°")
-        self.lbl_status_yaw.setText(f"{yaw:.2f}°")
-        self.lbl_status_corr.setText(f"{corr:.2f}°")
 
     def _on_connected(self, ok):
         if ok:
@@ -421,8 +344,6 @@ class MainWindow(QMainWindow):
         self.lbl_stage.setText("完成" if "完成" in msg else "停止")
         self.lbl_status_conn.setText("待机")
         self.lbl_status_conn.setStyleSheet("color:#e0e0e0; font:13px monospace;")
-        self.lbl_status_yaw.setText("—")
-        self.lbl_status_corr.setText("—")
         # 恢复进度条为有限循环模式
         self.progress_bar.setRange(0, 100)
         self.progress_bar.setValue(0)

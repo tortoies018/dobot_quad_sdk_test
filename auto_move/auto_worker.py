@@ -1,6 +1,5 @@
 """
-自动前后移动工作线程——使用 gRPC 高层 API 驱动机器人往复运动，
-并用 IMU 数据（机体偏航角）实时矫正航向漂移。
+自动前后移动工作线程——使用 gRPC 高层 API 驱动机器人往复运动。
 """
 
 import math
@@ -13,12 +12,12 @@ from dobot_quad import RobotClient
 
 
 class AutoMoveWorker(QThread):
-    """后台线程：连接机器狗，循环前进/后退，并用 IMU 偏航角矫正方向"""
+    """后台线程：连接机器狗，循环前进/后退"""
 
-    # 进度信号：当前循环, 总循环, 阶段描述, 当前偏航角(度), 矫正量(度)
-    progress = Signal(int, int, str, float, float)
+    # 进度信号：当前循环, 总循环, 阶段描述
+    progress = Signal(int, int, str)
     pos_ready = Signal(float, float, float)  # 世界坐标位置 (x, y, z) m，用于 3D 轨迹绘制
-    imu_data = Signal(dict)        # 完整 IMU 数据（位置、四元数、陀螺仪、加速度、欧拉角）
+    imu_data = Signal(dict)        # 完整 IMU 数据（位置、欧拉角）
     log_msg = Signal(str)          # 日志
     connected = Signal(bool)       # 连接状态
     finished_ok = Signal(str)      # 完成/中止消息
@@ -37,14 +36,10 @@ class AutoMoveWorker(QThread):
         # 可配置参数（由 GUI 设置）
         self.mode = "back_and_forth"   # back_and_forth / forward_only / backward_only
         self.distance = 1.0            # 单次移动距离 (m)
-        self.segment = 0.3             # 分段长度 (m)：每移动一小段即用 IMU 实时矫正
         self.repetitions = 3           # 循环次数
         self.infinite = False          # 是否无限循环（直到手动停止）
         self.speed_ratio = 50          # 速度比 [10,100]（运行中可实时修改）
-        self.use_imu = True            # 是否使用 IMU 矫正
-        self.yaw_threshold = 3.0       # 矫正阈值 (度)
-        self.turn_gain = 0.7           # 转向增益：每次转向纠正误差的比例 (0~1)
-        self.settle_time = 0.5         # 每小段移动后姿态稳定等待时间 (秒)
+        self.settle_time = 0.5         # 移动后姿态稳定等待时间 (秒)
 
     def stop(self):
         """请求停止"""
@@ -88,14 +83,6 @@ class AutoMoveWorker(QThread):
         except Exception as e:
             self._log("ERROR", f"设置速度比失败: {e}")
 
-        # 记录初始偏航角作为矫正基准
-        try:
-            self._initial_yaw = self._get_yaw()
-            self._log("INFO", f"初始偏航角: {self._initial_yaw:.2f}°")
-        except Exception as e:
-            self._log("ERROR", f"读取初始偏航角失败: {e}")
-            self._initial_yaw = 0.0
-
         # 记录初始姿态作为 3D 坐标显示基准（站平时本体 Z 轴竖直）
         try:
             state = self._robot.get_state()
@@ -132,14 +119,14 @@ class AutoMoveWorker(QThread):
                 total = 0 if self.infinite else self.repetitions
 
                 if do_forward:
-                    self.progress.emit(cycle, total, f"前进 {self.distance:.2f}m", 0, 0)
-                    self._move_with_imu("forward", self.distance)
+                    self.progress.emit(cycle, total, f"前进 {self.distance:.2f}m")
+                    self._move("forward", self.distance)
                     if not self._running:
                         break
 
                 if do_backward:
-                    self.progress.emit(cycle, total, f"后退 {self.distance:.2f}m", 0, 0)
-                    self._move_with_imu("backward", self.distance)
+                    self.progress.emit(cycle, total, f"后退 {self.distance:.2f}m")
+                    self._move("backward", self.distance)
                     if not self._running:
                         break
 
@@ -155,26 +142,10 @@ class AutoMoveWorker(QThread):
         finally:
             self._sampling = False   # 停止后台位置采样
 
-    # ─── 分段移动 + IMU 实时闭环控制 ────────────────
+    # ─── 移动 ─────────────────────────────────────
 
-    def _move_with_imu(self, direction, distance):
-        """将总移动距离拆分为小段，每移动一小段立即读取 IMU 偏航并实时矫正
-
-        这是实时闭环控制：而非一次移动一大段后再矫正。
-        每小段流程：移动 segment → 读取 IMU 偏航 → 若漂移则反向旋转矫正 → 继续下一段。
-        """
-        remaining = distance
-        while remaining > 0.01 and self._running:
-            step = min(self.segment, remaining)   # 本次小段长度
-            self._do_move(direction, step)        # 移动一小段
-            if not self._running:
-                break
-            if self.use_imu:
-                self._correct_heading()           # 立即用 IMU 实时矫正
-            remaining -= step
-
-    def _do_move(self, direction, distance):
-        """执行一次小段移动——使用通用移动 API（line_walk 系），不改变机器人状态"""
+    def _move(self, direction, distance):
+        """执行一次移动——使用通用移动 API（line_walk 系），不改变机器人状态"""
         try:
             if direction == "forward":
                 self._robot.walk_forward(distance, self.speed_ratio, show_progress=False)
@@ -234,12 +205,11 @@ class AutoMoveWorker(QThread):
                         diag_done = True
                     imu["pos"] = [0.0, 0.0, 0.0]
 
-                # 读取姿态与传感器数据
+                # 读取姿态（相对初始姿态，站平时本体坐标轴竖直）
                 try:
                     ori = rs.ori_body  # [roll, pitch, yaw] rad
                     rpy_abs = [float(v) for v in ori] if len(ori) >= 3 else [0.0, 0.0, 0.0]
                     ref = self._initial_rpy or [0.0, 0.0, 0.0]
-                    # 相对初始姿态的欧拉角：站平时本体坐标轴保持竖直
                     imu["rpy"] = [
                         self._normalize_rad(rpy_abs[0] - ref[0]),
                         self._normalize_rad(rpy_abs[1] - ref[1]),
@@ -249,35 +219,13 @@ class AutoMoveWorker(QThread):
                 except Exception:
                     imu["rpy"] = [0.0, 0.0, 0.0]
                     imu["rpy_abs"] = [0.0, 0.0, 0.0]
-                try:
-                    q = rs.quat_body  # [w, x, y, z]
-                    imu["quat"] = [float(v) for v in q] if len(q) >= 4 else [1.0, 0.0, 0.0, 0.0]
-                except Exception:
-                    imu["quat"] = [1.0, 0.0, 0.0, 0.0]
-                try:
-                    g = rs.gyro_body  # [wx, wy, wz] rad/s
-                    imu["gyro"] = [float(v) for v in g] if len(g) >= 3 else [0.0, 0.0, 0.0]
-                except Exception:
-                    imu["gyro"] = [0.0, 0.0, 0.0]
-                try:
-                    a = rs.accel_body  # [ax, ay, az] m/s²
-                    imu["accel"] = [float(v) for v in a] if len(a) >= 3 else [0.0, 0.0, 0.0]
-                except Exception:
-                    imu["accel"] = [0.0, 0.0, 0.0]
 
                 self.imu_data.emit(imu)
             except Exception:
                 pass
             time.sleep(0.1)  # 10Hz
 
-    def _get_yaw(self):
-        """从 IMU 融合位姿中读取偏航角（度）"""
-        state = self._robot.get_state()
-        rpy = state.robot_state.ori_body  # [roll, pitch, yaw] 弧度
-        yaw_deg = math.degrees(rpy[2])
-        return yaw_deg
-
-    def _emit_pos(self):
+    # ─── 移动 ─────────────────────────────────────    def _emit_pos(self):
         """读取世界坐标位置并发送轨迹点 (x, y, z) m
 
         优先使用 pos_body（IMU/里程计融合定位）；
@@ -323,63 +271,6 @@ class AutoMoveWorker(QThread):
                 self._log("WARN", "pos_body 和 vel_body 均为空，无法绘制轨迹")
         except Exception as e:
             self._log("ERROR", f"读取位置失败: {e}")
-
-    def _correct_heading(self):
-        """使用 IMU 偏航角矫正航向漂移"""
-        if not self.use_imu:
-            return
-        try:
-            yaw = self._get_yaw()
-            # 偏航误差 = 当前偏航 - 初始偏航（归一化到 [-180, 180]）
-            err = self._normalize_angle(yaw - self._initial_yaw)
-
-            self.progress.emit(0, 0, "读取IMU", yaw, err)
-
-            if abs(err) <= self.yaw_threshold:
-                self._log("INFO", f"IMU矫正: 偏航 {yaw:.2f}°，误差 {err:.2f}°（在阈值内，无需矫正）")
-                return
-
-            # ── 闭环分段转向 ──
-            # 不一次转满误差角（实际旋转存在误差），而是：
-            # 每次转误差的一部分 → 实时读 IMU → 再转 → 直到误差收敛
-            attempts = 0
-            max_attempts = 12
-            while abs(err) > self.yaw_threshold and self._running and attempts < max_attempts:
-                attempts += 1
-                # 每次转向 = 当前误差 × 增益（留余量避免过冲），最小转角 1°
-                turn = max(abs(err) * self.turn_gain, 1.0)
-                # 若误差 > 0（相对初始左偏），向右转纠正；反之向左转
-                self._log(
-                    "INFO",
-                    f"IMU矫正[{attempts}]: 偏航 {yaw:.2f}°，误差 {err:.2f}°，"
-                    f"{'右转' if err > 0 else '左转'} {turn:.2f}°"
-                )
-                if err > 0:
-                    self._robot.rotate_right(turn, show_progress=False)
-                else:
-                    self._robot.rotate_left(turn, show_progress=False)
-                time.sleep(self.settle_time)
-
-                # 实时读取 IMU 校验残差
-                yaw = self._get_yaw()
-                err = self._normalize_angle(yaw - self._initial_yaw)
-                self.progress.emit(0, 0, f"矫正中({attempts}/{max_attempts})", yaw, err)
-
-            # 矫正后校验
-            self.progress.emit(0, 0, "矫正完成", yaw, err)
-            self._log("INFO", f"矫正后偏航: {yaw:.2f}°，残差 {err:.2f}°（{attempts} 次迭代）")
-            self._emit_pos()   # 矫正后记录轨迹点
-        except Exception as e:
-            self._log("ERROR", f"IMU矫正失败: {e}")
-
-    @staticmethod
-    def _normalize_angle(deg):
-        """将角度归一化到 [-180, 180]"""
-        while deg > 180:
-            deg -= 360
-        while deg < -180:
-            deg += 360
-        return deg
 
     @staticmethod
     def _normalize_rad(rad):
