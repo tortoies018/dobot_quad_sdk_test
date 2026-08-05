@@ -87,7 +87,7 @@ class AutoMoveWorker(QThread):
         if self._robot is not None:
             try:
                 self._robot.set_speed_ratio(self.speed_ratio)
-                self._log("INFO", f"速度比实时更新为 {self.speed_ratio}")
+                self._log("API", f"set_speed_ratio(ratio={self.speed_ratio})")
             except Exception as e:
                 self._log("ERROR", f"实时更新速度比失败: {e}")
 
@@ -106,7 +106,7 @@ class AutoMoveWorker(QThread):
 
         try:
             self._robot.set_speed_ratio(self.speed_ratio)
-            self._log("INFO", f"速度比已设为 {self.speed_ratio}")
+            self._log("API", f"set_speed_ratio(ratio={self.speed_ratio})")
         except Exception as e:
             self._log("ERROR", f"设置速度比失败: {e}")
 
@@ -139,7 +139,7 @@ class AutoMoveWorker(QThread):
 
         try:
             self._robot.set_speed_ratio(self.speed_ratio)
-            self._log("INFO", f"速度比已设为 {self.speed_ratio}")
+            self._log("API", f"set_speed_ratio(ratio={self.speed_ratio})")
         except Exception as e:
             self._log("ERROR", f"设置速度比失败: {e}")
 
@@ -163,15 +163,29 @@ class AutoMoveWorker(QThread):
         # 记录轨迹起点
         self._emit_pos()
 
-        # 正方形模式：先计算并发送理想轨迹
+        # 计算并发送理想轨迹（指令移动效果：起点 → 目的地线段 / 正方形）
+        start = self._read_pos()
+        sx, sy = float(start[0]), float(start[1])
         if self.mode == "square":
-            start = self._read_pos()
             pts = self._ideal_square_points(start, self._initial_yaw, self.side_len)
+            self.ideal_path.emit(pts)
+            self._log("INFO", f"理想轨迹: 正方形，边长 {self.side_len:.2f}m")
+        else:
+            h = math.radians(self._initial_yaw)
+            u = (math.cos(h), math.sin(h))
+            if self.mode == "backward_only":
+                ex, ey = sx - self.distance * u[0], sy - self.distance * u[1]
+            else:   # forward_only / back_and_forth
+                ex, ey = sx + self.distance * u[0], sy + self.distance * u[1]
+            if self.mode == "back_and_forth":
+                pts = [[sx, sy, 0.0], [ex, ey, 0.0], [sx, sy, 0.0]]
+            else:
+                pts = [[sx, sy, 0.0], [ex, ey, 0.0]]
             self.ideal_path.emit(pts)
             self._log(
                 "INFO",
-                f"理想正方形: 起点({start[0]:.2f}, {start[1]:.2f}) "
-                f"边长{self.side_len:.2f}m",
+                f"理想轨迹: 起点({sx:.2f}, {sy:.2f}) 终点({ex:.2f}, {ey:.2f}) "
+                f"距离 {self.distance:.2f}m",
             )
 
         do_forward = self.mode in ("back_and_forth", "forward_only")
@@ -222,8 +236,10 @@ class AutoMoveWorker(QThread):
         """执行一次移动——使用通用移动 API（line_walk 系），不改变机器人状态"""
         try:
             if direction == "forward":
+                self._log("API", f"walk_forward(distance={distance:.2f}m, speed_ratio={self.speed_ratio})")
                 self._robot.walk_forward(distance, self.speed_ratio, show_progress=False)
             else:
+                self._log("API", f"walk_backward(distance={distance:.2f}m, speed_ratio={self.speed_ratio})")
                 self._robot.walk_backward(distance, self.speed_ratio, show_progress=False)
         except Exception as e:
             self._log("ERROR", f"移动失败({direction}): {e}")
@@ -258,8 +274,10 @@ class AutoMoveWorker(QThread):
                 f"{'右转' if err > 0 else '左转'} {abs(err):.2f}°",
             )
             if err > 0:
+                self._log("API", f"rotate_right(angle={abs(err):.2f}°)")
                 self._robot.rotate_right(abs(err), show_progress=False)
             else:
+                self._log("API", f"rotate_left(angle={abs(err):.2f}°)")
                 self._robot.rotate_left(abs(err), show_progress=False)
             time.sleep(self.settle_time)
             self._emit_pos()   # 转向后记录轨迹点
@@ -278,7 +296,8 @@ class AutoMoveWorker(QThread):
             if not (self._running and self._move_running):
                 return
             if i < 3:
-                self._robot.rotate_right(90, show_progress=False)   # 右转90°（转角）
+                self._log("API", "rotate_right(angle=90.0°)")   # 右转90°（转角）
+                self._robot.rotate_right(90, show_progress=False)
                 time.sleep(self.settle_time)
                 self._emit_pos()
 

@@ -209,7 +209,7 @@ class MainWindow(QMainWindow):
         hint.setStyleSheet("color:#888; font:11px;")
         hint.setAlignment(Qt.AlignCenter)
         v4.addWidget(hint)
-        legend = QLabel("橙色线: 理想轨迹（正方形模式）")
+        legend = QLabel("橙色线: 指令理想轨迹（起点→目的地）")
         legend.setStyleSheet("color:#ff9800; font:11px;")
         legend.setAlignment(Qt.AlignCenter)
         v4.addWidget(legend)
