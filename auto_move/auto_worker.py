@@ -269,7 +269,7 @@ class AutoMoveWorker(QThread):
     # ─── 正方形运动 ────────────────────────────────
 
     def _run_square(self, cycle, total):
-        """正方形运动：前进一条边 → 右转90° → 前进 → ... 共 4 条边"""
+        """正方形运动：前进一条边 → 右转90° → 前进 → ... 共 4 条边，最后转回初始方向"""
         for i in range(4):
             if not (self._running and self._move_running):
                 return
@@ -281,6 +281,11 @@ class AutoMoveWorker(QThread):
                 self._robot.rotate_right(90, show_progress=False)   # 右转90°（转角）
                 time.sleep(self.settle_time)
                 self._emit_pos()
+
+        # 正方形走完，转回初始方向（按 IMU 偏航一次转向纠正累计漂移）
+        if self._running and self._move_running:
+            self.progress.emit(cycle, total, "正方形完成，转回初始方向")
+            self._correct_heading_once()
 
     def _read_pos(self):
         """读取当前世界坐标 [x, y, z]（m）；pos_body 为空则回退 vel_body 积分估算"""
