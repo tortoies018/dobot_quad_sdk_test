@@ -1,157 +1,239 @@
 """
-IMU 轨迹绘图控件——绘制机器人在世界坐标系中的 XY 运动轨迹。
+IMU 轨迹绘图控件——使用 PyOpenGL / pyqtgraph 绘制机器人在世界坐标系中的 3D 运动轨迹。
+
+交互方式（类 Blender）：
+- 中键拖拽：环绕视角（Orbit）
+- Shift + 中键拖拽：平移视角（Pan）
+- 滚轮：缩放
+- R 键：重置视角
 
 数据来源：gRPC get_state().robot_state.pos_body（IMU 融合定位）。
+
+注意：轨迹线绘制在地面（z=0）上，当前位置标记显示真实高度，便于和网格对齐。
 """
 
 import math
 
-from PySide6.QtCore import Qt, QPointF
-from PySide6.QtGui import QPainter, QPen, QColor, QPolygonF
-from PySide6.QtWidgets import QWidget, QSizePolicy
+import numpy as np
+import pyqtgraph.opengl as gl
+from PySide6.QtCore import Qt
+from PySide6.QtWidgets import QSizePolicy
 
 
-class TrajectoryPlot(QWidget):
-    """2D 轨迹绘图：世界坐标 XY 平面（纯绘制控件，无内部子窗口）"""
+# 颜色常量（0-255 整数元组，兼容 pyqtgraph 0.14）
+COLOR_BG = (217, 222, 225, 255)
+COLOR_GRID_MAJOR = (60, 70, 80, 255)
+COLOR_GRID_MINOR = (150, 160, 170, 255)
+COLOR_LINE = (0, 140, 70, 255)
+COLOR_START = (238, 110, 0, 255)
+COLOR_CURRENT = (210, 50, 50, 255)
+COLOR_DROP = (100, 110, 120, 255)
 
-    TITLE_H = 24  # 顶部标题栏高度
+
+class TrajectoryPlot3D(gl.GLViewWidget):
+    """3D 轨迹绘图：世界坐标 XYZ，支持 Blender 式交互"""
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setMinimumSize(400, 220)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        self.setStyleSheet("background-color:#16181c;")
+        self.setFocusPolicy(Qt.StrongFocus)
 
-        self._points = []        # [(x, y), ...] 单位 m
+        # 浅灰背景
+        self.setBackgroundColor("#d9dce1")
+        self.setStyleSheet("background-color: #d9dce1;")
+
+        # 初始相机位置：略俯视，能看清地面网格
+        self.setCameraPosition(distance=6.0, elevation=40, azimuth=45)
+
+        self._points = []        # [(x, y, z), ...] 单位 m
         self._clear_pts = []     # 每次移动的起点标记
         self._max_points = 5000
 
-    def add_point(self, x, y):
-        """追加一个轨迹点并触发重绘（自动过滤 NaN/Inf）"""
-        x = float(x)
-        y = float(y)
-        if not (math.isfinite(x) and math.isfinite(y)):
+        # 地面网格：使用线段绘制，避免 GLGridItem 线太细看不清
+        self._grid_major = gl.GLLinePlotItem(mode="lines", width=2, color=COLOR_GRID_MAJOR)
+        self.addItem(self._grid_major)
+        self._grid_minor = gl.GLLinePlotItem(mode="lines", width=1, color=COLOR_GRID_MINOR)
+        self.addItem(self._grid_minor)
+        self._draw_grid(20.0, 1.0, 0.2, 0.0, 0.0)
+
+        # 坐标轴
+        self._axes = gl.GLAxisItem()
+        self._axes.setSize(0.5, 0.5, 0.5)
+        self.addItem(self._axes)
+
+        # 轨迹线（绘制在地面上 z=0，确保和网格对齐）
+        self._line = gl.GLLinePlotItem(
+            color=COLOR_LINE, width=3, antialias=True
+        )
+        self.addItem(self._line)
+
+        # 起点标记（橙色）
+        self._starts = gl.GLScatterPlotItem(color=COLOR_START, size=8)
+        self.addItem(self._starts)
+
+        # 当前位置（红色）
+        self._current = gl.GLScatterPlotItem(color=COLOR_CURRENT, size=10)
+        self.addItem(self._current)
+
+        # 当前位置到地面的垂线
+        self._drop_line = gl.GLLinePlotItem(mode="lines", width=2, color=COLOR_DROP)
+        self.addItem(self._drop_line)
+
+        # 鼠标交互状态
+        self._last_mouse_pos = None
+        self._drag_button = None
+
+    # ─── 网格绘制 ──────────────────────────────────────────────────
+
+    @staticmethod
+    def _grid_segments(size, step, cx=0.0, cy=0.0):
+        """生成 XY 平面网格线段（mode='lines' 格式，每两点一条独立线段）"""
+        half = size / 2.0
+        start = -half
+        n = int(round(size / step))
+        pts = []
+        for i in range(n + 1):
+            v = start + i * step
+            # 平行于 X 轴的线
+            pts.append((start + cx, v + cy, 0.0))
+            pts.append((half + cx, v + cy, 0.0))
+            # 平行于 Y 轴的线
+            pts.append((v + cx, start + cy, 0.0))
+            pts.append((v + cx, half + cy, 0.0))
+        return np.array(pts, dtype=np.float32)
+
+    def _draw_grid(self, size, major_step, minor_step, cx, cy):
+        self._grid_major.setData(
+            pos=self._grid_segments(size, major_step, cx, cy)
+        )
+        self._grid_minor.setData(
+            pos=self._grid_segments(size, minor_step, cx, cy)
+        )
+
+    # ─── 数据接口 ──────────────────────────────────────────────────
+
+    def add_point(self, x, y, z):
+        """追加一个 3D 轨迹点"""
+        x, y, z = float(x), float(y), float(z)
+        if not all(math.isfinite(v) for v in (x, y, z)):
             return
-        self._points.append((x, y))
+        self._points.append((x, y, z))
         if len(self._points) > self._max_points:
             self._points.pop(0)
-        self.update()
+        self._update()
 
     def mark_start(self):
         """标记当前位置为一次移动的起点"""
         if self._points:
             self._clear_pts.append(self._points[-1])
+            self._update()
 
     def clear(self):
         """清空轨迹"""
         self._points.clear()
         self._clear_pts.clear()
-        self.update()
+        self._update()
+        self.setCameraPosition(distance=6.0, elevation=40, azimuth=45)
 
-    def paintEvent(self, event):
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-
-        w = self.width()
-        h = self.height()
-        th = self.TITLE_H
-        plot_h = h - th
-
-        # ── 标题栏 ──
-        painter.fillRect(0, 0, w, th, QColor("#22262b"))
-        painter.setPen(QColor("#33b5ff"))
-        font = painter.font()
-        font.setBold(True)
-        font.setPixelSize(13)
-        painter.setFont(font)
-        painter.drawText(8, 17, "世界坐标 XY 轨迹 (IMU 融合定位)")
-
-        # 绘图区域边框（始终可见，明确边界）
-        painter.setPen(QPen(QColor("#3a4046"), 1))
-        painter.drawRect(0, th, w - 1, plot_h - 1)
-
-        # 过滤无效点
-        valid_pts = [(x, y) for x, y in self._points if math.isfinite(x) and math.isfinite(y)]
-
-        # 无数据时提示
-        if not valid_pts:
-            painter.setPen(QPen(QColor("#a8b3bc"), 1))
-            painter.drawText(w // 2 - 70, th + plot_h // 2, "等待 IMU 位置数据...")
-            painter.end()
+    def _update(self):
+        """同步数据到 OpenGL 项"""
+        if not self._points:
+            empty = np.zeros((0, 3), dtype=np.float32)
+            self._line.setData(pos=empty)
+            self._current.setData(pos=empty)
+            self._starts.setData(pos=empty)
+            self._drop_line.setData(pos=empty)
+            self._draw_grid(20.0, 1.0, 0.2, 0.0, 0.0)
             return
 
-        # 计算数据范围（自动缩放）
-        xs = [p[0] for p in valid_pts]
-        ys = [p[1] for p in valid_pts]
-        min_x, max_x = min(xs), max(xs)
-        min_y, max_y = min(ys), max(ys)
+        pts = np.array(self._points, dtype=np.float32)
 
-        # 保证最小范围，避免缩放异常（所有点重合时以点为中心展开）
-        rx = max(max_x - min_x, 0.5)
-        ry = max(max_y - min_y, 0.5)
-        cx0, cy0 = (min_x + max_x) / 2, (min_y + max_y) / 2
-        min_x, max_x = cx0 - rx, cx0 + rx
-        min_y, max_y = cy0 - ry, cy0 + ry
-        # 留边距
-        min_x -= rx * 0.1
-        max_x += rx * 0.1
-        min_y -= ry * 0.1
-        max_y += ry * 0.1
-        rx = max(max_x - min_x, 0.1)
-        ry = max(max_y - min_y, 0.1)
+        # 轨迹线压到地面 z=0，便于和网格对齐
+        floor_pts = pts.copy()
+        floor_pts[:, 2] = 0.0
+        self._line.setData(pos=floor_pts)
 
-        def to_screen(x, y):
-            sx = (x - min_x) / rx * (w - 40) + 20
-            sy = h - 20 - (y - min_y) / ry * (plot_h - 40)
-            return QPointF(sx, sy)
+        # 当前位置标记使用真实高度
+        self._current.setData(pos=pts[-1:])
 
-        # 网格：每 0.5m 一格（数据范围大时自动变稀）
-        painter.setPen(QPen(QColor("#2b3138"), 1))
-        grid = 0.5
-        while rx / grid > 10:
-            grid *= 2
-        gx = int(min_x // grid) * grid
-        while gx <= max_x:
-            p1 = to_screen(gx, min_y)
-            p2 = to_screen(gx, max_y)
-            painter.drawLine(p1, p2)
-            gx += grid
-        gy = int(min_y // grid) * grid
-        while gy <= max_y:
-            p1 = to_screen(min_x, gy)
-            p2 = to_screen(max_x, gy)
-            painter.drawLine(p1, p2)
-            gy += grid
+        # 当前位置到地面的垂线
+        last = pts[-1]
+        drop = np.array([
+            [last[0], last[1], 0.0],
+            last,
+        ], dtype=np.float32)
+        self._drop_line.setData(pos=drop)
 
-        # 轴标签
-        painter.setPen(QPen(QColor("#a8b3bc"), 1))
-        painter.drawText(10, th + 12, f"X: {min_x:.1f}~{max_x:.1f} m")
-        painter.drawText(10, h - 6, f"Y: {min_y:.1f}~{max_y:.1f} m")
+        if self._clear_pts:
+            self._starts.setData(pos=np.array(self._clear_pts, dtype=np.float32))
+        else:
+            self._starts.setData(pos=np.zeros((0, 3), dtype=np.float32))
 
-        # 移动起点标记（橙点）
-        for sx, sy in self._clear_pts:
-            if not (math.isfinite(sx) and math.isfinite(sy)):
-                continue
-            p = to_screen(sx, sy)
-            painter.setPen(QPen(QColor("#fa0"), 1))
-            painter.setBrush(QColor("#fa0"))
-            painter.drawEllipse(p, 5, 5)
+        # 动态调整网格大小与位置，使其始终包围轨迹
+        xs, ys, zs = pts[:, 0], pts[:, 1], pts[:, 2]
+        cx, cy = float(xs.mean()), float(ys.mean())
+        max_range = max(
+            xs.max() - xs.min(),
+            ys.max() - ys.min(),
+            zs.max() - zs.min(),
+            1.0,
+        )
+        total_size = math.ceil(max_range * 2.4)
+        # 默认网格至少 20m，避免一开始太小
+        total_size = max(total_size, 20)
+        major_step = max(1.0, round(total_size / 10))
+        minor_step = max(0.2, round(major_step / 5, 1))
+        self._draw_grid(float(total_size), major_step, minor_step, cx, cy)
 
-        # 轨迹线（绿色）
-        if len(valid_pts) >= 2:
-            path = QPolygonF([to_screen(x, y) for x, y in valid_pts])
-            painter.setPen(QPen(QColor("#0f0"), 2))
-            painter.setBrush(Qt.BrushStyle.NoBrush)
-            painter.drawPolyline(path)
+    # ─── Blender 式交互 ───────────────────────────────────────────
 
-        # 当前位置（红点）
-        last_x, last_y = valid_pts[-1]
-        p = to_screen(last_x, last_y)
-        painter.setPen(QPen(QColor("#f00"), 1))
-        painter.setBrush(QColor("#f00"))
-        painter.drawEllipse(p, 5, 5)
-        painter.setPen(QPen(QColor("#fff"), 1))
-        painter.drawText(int(p.x()) + 8, int(p.y()) - 4,
-                         f"({last_x:.2f}, {last_y:.2f})")
+    def mousePressEvent(self, ev):
+        self._last_mouse_pos = ev.position()
+        self._drag_button = ev.button()
+        if ev.button() == Qt.MiddleButton:
+            ev.accept()
+        else:
+            super().mousePressEvent(ev)
 
-        painter.end()
+    def mouseMoveEvent(self, ev):
+        if self._drag_button != Qt.MiddleButton or self._last_mouse_pos is None:
+            super().mouseMoveEvent(ev)
+            return
+
+        delta = ev.position() - self._last_mouse_pos
+        self._last_mouse_pos = ev.position()
+
+        if ev.modifiers() & Qt.ShiftModifier:
+            # Shift + 中键 = 平移
+            dist = max(0.1, self.opts.get("distance", 6.0))
+            self.pan(
+                -delta.x() * 0.005 * dist,
+                delta.y() * 0.005 * dist,
+                0,
+                relative="view",
+            )
+        else:
+            # 中键 = 环绕
+            self.orbit(-delta.x() * 0.4, delta.y() * 0.4)
+        ev.accept()
+
+    def mouseReleaseEvent(self, ev):
+        self._drag_button = None
+        self._last_mouse_pos = None
+        super().mouseReleaseEvent(ev)
+
+    def wheelEvent(self, ev):
+        delta = ev.angleDelta().y()
+        if delta != 0:
+            factor = 0.9 if delta > 0 else 1.1
+            self.setCameraPosition(
+                distance=max(0.1, self.opts.get("distance", 6.0) * factor)
+            )
+        ev.accept()
+
+    def keyPressEvent(self, ev):
+        if ev.key() == Qt.Key_R:
+            self.setCameraPosition(distance=6.0, elevation=40, azimuth=45)
+        else:
+            super().keyPressEvent(ev)

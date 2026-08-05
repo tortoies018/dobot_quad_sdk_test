@@ -15,7 +15,7 @@ from PySide6.QtWidgets import (
 )
 
 from auto_worker import AutoMoveWorker
-from trajectory_plot import TrajectoryPlot
+from trajectory_plot import TrajectoryPlot3D
 
 
 class MainWindow(QMainWindow):
@@ -23,7 +23,7 @@ class MainWindow(QMainWindow):
 
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Dobot Quad 自动前后移动 (IMU矫正 + 轨迹)")
+        self.setWindowTitle("Dobot Quad 自动前后移动 (IMU矫正 + 3D轨迹)")
         self.setMinimumSize(1180, 780)
         self.resize(1320, 880)
         self.setStyleSheet("QMainWindow { background:#202225; }")
@@ -199,11 +199,11 @@ class MainWindow(QMainWindow):
         v3.addWidget(self.lbl_yaw)
         right_layout.addWidget(grp3)
 
-        # IMU 轨迹
-        grp4 = QGroupBox("IMU 轨迹")
+        # IMU 3D 轨迹
+        grp4 = QGroupBox("IMU 3D 轨迹")
         grp4.setStyleSheet(self._grp_style("#69f0ae"))
         v4 = QVBoxLayout(grp4)
-        self.traj_plot = TrajectoryPlot()
+        self.traj_plot = TrajectoryPlot3D()
         v4.addWidget(self.traj_plot, 1)
         btn_clear_traj = QPushButton("清空轨迹")
         btn_clear_traj.setStyleSheet("QPushButton { background:#e65100; color:#fff; padding:6px 12px; "
@@ -211,6 +211,10 @@ class MainWindow(QMainWindow):
                                      "QPushButton:hover { background:#f57c00; }")
         btn_clear_traj.clicked.connect(self.traj_plot.clear)
         v4.addWidget(btn_clear_traj)
+        hint = QLabel("中键旋转 | Shift+中键平移 | 滚轮缩放 | R 重置")
+        hint.setStyleSheet("color:#888; font:11px;")
+        hint.setAlignment(Qt.AlignCenter)
+        v4.addWidget(hint)
         right_layout.addWidget(grp4, 1)
 
         # 日志
@@ -236,9 +240,9 @@ class MainWindow(QMainWindow):
         self._worker.finished_ok.connect(self._on_finished)
         self._running = False
 
-    def _on_pos(self, x, y):
-        """收到 IMU 位置：添加到轨迹图"""
-        self.traj_plot.add_point(x, y)
+    def _on_pos(self, x, y, z):
+        """收到 IMU 位置：添加到 3D 轨迹图"""
+        self.traj_plot.add_point(x, y, z)
 
     # ─── 样式辅助 ───────────────────────────────────
 

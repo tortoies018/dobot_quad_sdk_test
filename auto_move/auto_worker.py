@@ -17,7 +17,7 @@ class AutoMoveWorker(QThread):
 
     # 进度信号：当前循环, 总循环, 阶段描述, 当前偏航角(度), 矫正量(度)
     progress = Signal(int, int, str, float, float)
-    pos_ready = Signal(float, float)     # 世界坐标位置 (x, y) m，用于轨迹绘制
+    pos_ready = Signal(float, float, float)  # 世界坐标位置 (x, y, z) m，用于 3D 轨迹绘制
     log_msg = Signal(str)          # 日志
     connected = Signal(bool)       # 连接状态
     finished_ok = Signal(str)      # 完成/中止消息
@@ -187,7 +187,10 @@ class AutoMoveWorker(QThread):
                     if not diag_done:
                         self._log("INFO", "轨迹数据源: pos_body（世界坐标）")
                         diag_done = True
-                    self.pos_ready.emit(float(pos[0]), float(pos[1]))
+                    if len(pos) >= 3:
+                        self.pos_ready.emit(float(pos[0]), float(pos[1]), float(pos[2]))
+                    else:
+                        self.pos_ready.emit(float(pos[0]), float(pos[1]), 0.0)
                 elif len(vel) >= 2:
                     if not diag_done:
                         self._log("INFO", "轨迹数据源: vel_body 积分")
@@ -196,10 +199,16 @@ class AutoMoveWorker(QThread):
                     dt = now - last
                     last = now
                     if self._pos_estimate is None:
-                        self._pos_estimate = [0.0, 0.0]
+                        self._pos_estimate = [0.0, 0.0, 0.0]
                     self._pos_estimate[0] += vel[0] * dt
                     self._pos_estimate[1] += vel[1] * dt
-                    self.pos_ready.emit(self._pos_estimate[0], self._pos_estimate[1])
+                    if len(vel) >= 3:
+                        self._pos_estimate[2] += vel[2] * dt
+                    self.pos_ready.emit(
+                        self._pos_estimate[0],
+                        self._pos_estimate[1],
+                        self._pos_estimate[2],
+                    )
                 else:
                     if not diag_done:
                         self._log("ERROR", "pos_body 和 vel_body 均为空，高层 API 不提供位置，轨迹无法绘制")
@@ -216,7 +225,7 @@ class AutoMoveWorker(QThread):
         return yaw_deg
 
     def _emit_pos(self):
-        """读取世界坐标位置并发送轨迹点 (x, y) m
+        """读取世界坐标位置并发送轨迹点 (x, y, z) m
 
         优先使用 pos_body（IMU/里程计融合定位）；
         若为空则回退用 vel_body 积分估算位置。
@@ -227,8 +236,12 @@ class AutoMoveWorker(QThread):
             pos = rs.pos_body
 
             if len(pos) >= 2:
-                self.pos_ready.emit(float(pos[0]), float(pos[1]))
-                self._log("INFO", f"位置: x={pos[0]:.3f} y={pos[1]:.3f}")
+                if len(pos) >= 3:
+                    self.pos_ready.emit(float(pos[0]), float(pos[1]), float(pos[2]))
+                    self._log("INFO", f"位置: x={pos[0]:.3f} y={pos[1]:.3f} z={pos[2]:.3f}")
+                else:
+                    self.pos_ready.emit(float(pos[0]), float(pos[1]), 0.0)
+                    self._log("INFO", f"位置: x={pos[0]:.3f} y={pos[1]:.3f}")
                 return
 
             # 回退：vel_body 积分
@@ -236,13 +249,23 @@ class AutoMoveWorker(QThread):
             if len(vel) >= 2:
                 now = time.monotonic()
                 if self._pos_estimate is None:
-                    self._pos_estimate = [0.0, 0.0]
+                    self._pos_estimate = [0.0, 0.0, 0.0]
                 dt = (now - self._last_pos_time) if self._last_pos_time else 0.0
                 self._last_pos_time = now
                 self._pos_estimate[0] += vel[0] * dt
                 self._pos_estimate[1] += vel[1] * dt
-                self.pos_ready.emit(self._pos_estimate[0], self._pos_estimate[1])
-                self._log("INFO", f"位置(积分): x={self._pos_estimate[0]:.3f} y={self._pos_estimate[1]:.3f}")
+                if len(vel) >= 3:
+                    self._pos_estimate[2] += vel[2] * dt
+                self.pos_ready.emit(
+                    self._pos_estimate[0],
+                    self._pos_estimate[1],
+                    self._pos_estimate[2],
+                )
+                self._log(
+                    "INFO",
+                    f"位置(积分): x={self._pos_estimate[0]:.3f} "
+                    f"y={self._pos_estimate[1]:.3f} z={self._pos_estimate[2]:.3f}",
+                )
             else:
                 self._log("WARN", "pos_body 和 vel_body 均为空，无法绘制轨迹")
         except Exception as e:
