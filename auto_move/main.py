@@ -235,19 +235,21 @@ class MainWindow(QMainWindow):
     def _grp_style(color):
         return (f"QGroupBox {{ font:bold 14px; color:{color}; border:1px solid #42464c; "
                 f"border-radius:6px; margin-top:12px; padding-top:16px; background:#2b2d31; }} "
-                f"QGroupBox::title {{ subcontrol-origin:margin; left:12px; padding:0 6px; }}")
+                f"QGroupBox::title {{ subcontrol-origin:margin; left:12px; padding:0 6px; }} "
+                # 分组内的 QLabel 默认提亮，避免表单标签深底深字
+                f"QGroupBox QLabel {{ color:#e0e0e0; }}")
 
     @staticmethod
     def _input_style():
         return ("QSpinBox, QDoubleSpinBox, QComboBox { background:#3a3d42; color:#f5f5f5; padding:5px; "
                 "border:1px solid #55585e; border-radius:4px; }"
                 "QSpinBox:focus, QDoubleSpinBox:focus, QComboBox:focus { border:1px solid #29b6f6; }"
-                # 下拉弹出列表：深色底 + 亮色文字，避免默认白底白字看不清
-                "QComboBox QAbstractItemView { background:#2b2d31; color:#f5f5f5; "
-                "border:1px solid #55585e; outline:none; "
-                "selection-background-color:#29b6f6; selection-color:#fff; }"
-                "QComboBox QAbstractItemView::item { padding:6px 8px; }"
-                "QComboBox QAbstractItemView::item:hover { background:#3a3d42; }")
+                # 下拉弹出列表：强制每项都有独立前景/背景色，避免跟随系统主题导致白底白字
+                "QComboBox QAbstractItemView { background-color:#2b2d31; color:#f5f5f5; "
+                "border:1px solid #55585e; outline:none; }"
+                "QComboBox QAbstractItemView::item { color:#f5f5f5; background-color:#2b2d31; padding:6px 8px; }"
+                "QComboBox QAbstractItemView::item:hover { color:#fff; background-color:#3a3d42; }"
+                "QComboBox QAbstractItemView::item:selected { color:#fff; background-color:#29b6f6; }")
 
     @staticmethod
     def _btn_style(base, hover):
