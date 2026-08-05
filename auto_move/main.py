@@ -11,7 +11,7 @@ from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QGroupBox, QPushButton, QLabel, QTextEdit, QStatusBar,
     QFormLayout, QSpinBox, QDoubleSpinBox, QCheckBox, QComboBox,
-    QProgressBar, QSlider,
+    QProgressBar, QSlider, QLineEdit,
 )
 
 from auto_worker import AutoMoveWorker
@@ -35,6 +35,17 @@ class MainWindow(QMainWindow):
         # ═══════ 左侧：参数设置 ═══════
         left = QWidget()
         left_layout = QVBoxLayout(left)
+
+        # ── 连接设置 ──
+        grp_conn = QGroupBox("连接设置")
+        grp_conn.setStyleSheet(self._grp_style("#4fc3f7"))
+        form_conn = QFormLayout(grp_conn)
+        self.addr_edit = QLineEdit("10.30.12.196:50051")
+        self.addr_edit.setPlaceholderText("例如 10.30.12.154:50051")
+        self.addr_edit.setStyleSheet(self._input_style())
+        self.addr_edit.setToolTip("机器人 gRPC 地址，格式：IP:端口")
+        form_conn.addRow("机器人地址:", self.addr_edit)
+        left_layout.addWidget(grp_conn)
 
         # ── 移动参数 ──
         grp = QGroupBox("移动参数")
@@ -217,7 +228,7 @@ class MainWindow(QMainWindow):
         self.setStatusBar(self._sb)
 
         # ═══════ 工作线程 ═══════
-        self._worker = AutoMoveWorker(addr="10.30.12.154:50051")
+        self._worker = AutoMoveWorker(addr=self.addr_edit.text().strip())
         self._worker.progress.connect(self._on_progress)
         self._worker.pos_ready.connect(self._on_pos)
         self._worker.log_msg.connect(self._log_msg)
@@ -241,9 +252,9 @@ class MainWindow(QMainWindow):
 
     @staticmethod
     def _input_style():
-        return ("QSpinBox, QDoubleSpinBox, QComboBox { background:#3a3d42; color:#f5f5f5; padding:5px; "
+        return ("QSpinBox, QDoubleSpinBox, QComboBox, QLineEdit { background:#3a3d42; color:#f5f5f5; padding:5px; "
                 "border:1px solid #55585e; border-radius:4px; }"
-                "QSpinBox:focus, QDoubleSpinBox:focus, QComboBox:focus { border:1px solid #29b6f6; }"
+                "QSpinBox:focus, QDoubleSpinBox:focus, QComboBox:focus, QLineEdit:focus { border:1px solid #29b6f6; }"
                 # 下拉弹出列表：强制每项都有独立前景/背景色，避免跟随系统主题导致白底白字
                 "QComboBox QAbstractItemView { background-color:#2b2d31; color:#f5f5f5; "
                 "border:1px solid #55585e; outline:none; }"
@@ -265,6 +276,12 @@ class MainWindow(QMainWindow):
         if self._running:
             return
 
+        # 校验并同步连接地址
+        addr = self.addr_edit.text().strip()
+        if not self._validate_addr(addr):
+            return
+        self._worker.set_address(addr)
+
         # 同步参数到工作线程
         self._worker.mode = ["back_and_forth", "forward_only", "backward_only"][self.mode_combo.currentIndex()]
         self._worker.distance = self.dist_spin.value()
@@ -280,12 +297,13 @@ class MainWindow(QMainWindow):
         self._running = True
         self.btn_start.setEnabled(False)
         self.btn_stop.setEnabled(True)
+        self.addr_edit.setEnabled(False)
         self.progress_bar.setValue(0)
         self.lbl_stage.setText("连接中...")
         self.traj_plot.clear()   # 每次启动清空轨迹
         self._log_msg("─" * 40)
         loop_txt = "无限" if self.infinite_check.isChecked() else f"{self.rep_spin.value()}次"
-        self._log_msg(f"[{self._ts()}] [INFO] 启动: 模式={self.mode_combo.currentText()} "
+        self._log_msg(f"[{self._ts()}] [INFO] 启动: 地址={addr} 模式={self.mode_combo.currentText()} "
                       f"距离={self.dist_spin.value()}m 分段={self.seg_spin.value()}m "
                       f"循环={loop_txt} 速度={self.speed_spin.value()} "
                       f"IMU矫正={'开' if self.imu_check.isChecked() else '关'}")
@@ -330,6 +348,7 @@ class MainWindow(QMainWindow):
         self._running = False
         self.btn_start.setEnabled(True)
         self.btn_stop.setEnabled(False)
+        self.addr_edit.setEnabled(True)
         self.lbl_stage.setText("完成" if "完成" in msg else "停止")
         # 恢复进度条为有限循环模式
         self.progress_bar.setRange(0, 100)
@@ -342,6 +361,21 @@ class MainWindow(QMainWindow):
         """当前时间戳 HH:MM:SS"""
         import time as _t
         return _t.strftime("%H:%M:%S")
+
+    def _validate_addr(self, addr):
+        """校验地址格式为 IP:端口"""
+        if ":" not in addr:
+            self._log_msg(f"[{self._ts()}] [ERROR] 地址格式错误，应为 IP:端口，当前: {addr}")
+            return False
+        host, port_str = addr.rsplit(":", 1)
+        try:
+            port = int(port_str)
+            if not 1 <= port <= 65535:
+                raise ValueError
+        except ValueError:
+            self._log_msg(f"[{self._ts()}] [ERROR] 端口无效: {port_str}（应为 1~65535 的整数）")
+            return False
+        return True
 
     def _log_msg(self, msg):
         self._log.append(msg)

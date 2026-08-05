@@ -48,6 +48,10 @@ class AutoMoveWorker(QThread):
         """请求停止"""
         self._running = False
 
+    def set_address(self, addr):
+        """更新机器人连接地址（在 start() 前调用）"""
+        self._addr = addr
+
     def _log(self, level, msg):
         """发送带时间戳和信息级别的日志： [HH:MM:SS] [级别] 消息"""
         ts = time.strftime("%H:%M:%S")
