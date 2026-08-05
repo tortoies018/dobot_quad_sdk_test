@@ -17,6 +17,7 @@ class AutoMoveWorker(QThread):
     # 进度信号：当前循环, 总循环, 阶段描述
     progress = Signal(int, int, str)
     pos_ready = Signal(float, float, float)  # 世界坐标位置 (x, y, z) m，用于 3D 轨迹绘制
+    ideal_path = Signal(list)      # 理想轨迹点列表 [[x,y,z], ...]
     imu_data = Signal(dict)        # 完整 IMU 数据（位置、欧拉角）
     log_msg = Signal(str)          # 日志
     connected = Signal(bool)       # 连接状态
@@ -35,8 +36,9 @@ class AutoMoveWorker(QThread):
         self._initial_yaw = 0.0      # 初始偏航角（航向矫正基准）
 
         # 可配置参数（由 GUI 设置）
-        self.mode = "back_and_forth"   # back_and_forth / forward_only / backward_only
-        self.distance = 1.0            # 单次移动距离 (m)
+        self.mode = "back_and_forth"   # back_and_forth / forward_only / backward_only / square
+        self.distance = 1.0            # 直线单次移动距离 (m)
+        self.side_len = 1.0            # 正方形边长 (m)
         self.repetitions = 3           # 循环次数
         self.infinite = False          # 是否无限循环（直到手动停止）
         self.speed_ratio = 50          # 速度比 [10,100]（运行中可实时修改）
@@ -111,6 +113,17 @@ class AutoMoveWorker(QThread):
         # 记录初始位置（轨迹起点）
         self._emit_pos()
 
+        # 正方形模式：先计算并发送理想轨迹
+        if self.mode == "square":
+            start = self._read_pos()
+            pts = self._ideal_square_points(start, self._initial_yaw, self.side_len)
+            self.ideal_path.emit(pts)
+            self._log(
+                "INFO",
+                f"理想正方形: 起点({start[0]:.2f}, {start[1]:.2f}) "
+                f"边长{self.side_len:.2f}m",
+            )
+
         # 启动后台连续位置采样线程（平滑绘制轨迹）
         self._sampling = True
         sampler = threading.Thread(target=self._sample_pos, daemon=True)
@@ -118,6 +131,7 @@ class AutoMoveWorker(QThread):
 
         do_forward = self.mode in ("back_and_forth", "forward_only")
         do_backward = self.mode in ("back_and_forth", "backward_only")
+        do_square = self.mode == "square"
 
         try:
             cycle = 0
@@ -128,7 +142,12 @@ class AutoMoveWorker(QThread):
                     break
                 total = 0 if self.infinite else self.repetitions
 
-                if do_forward:
+                if do_square:
+                    self.progress.emit(cycle, total, f"正方形 边长{self.side_len:.2f}m")
+                    self._run_square(cycle, total)
+                    if not self._running:
+                        break
+                elif do_forward:
                     self.progress.emit(cycle, total, f"前进 {self.distance:.2f}m")
                     self._move("forward", self.distance)
                     if not self._running:
@@ -204,6 +223,66 @@ class AutoMoveWorker(QThread):
         except Exception as e:
             self._log("ERROR", f"航向矫正失败: {e}")
 
+    # ─── 正方形运动 ────────────────────────────────
+
+    def _run_square(self, cycle, total):
+        """正方形运动：前进一条边 → 右转90° → 前进 → ... 共 4 条边"""
+        for i in range(4):
+            if not self._running:
+                return
+            self.progress.emit(cycle, total, f"正方形 第{i + 1}/4 边")
+            self._move("forward", self.side_len)      # 走一条边
+            if not self._running:
+                return
+            if i < 3:
+                self._robot.rotate_right(90, show_progress=False)   # 右转90°（转角）
+                time.sleep(self.settle_time)
+                self._emit_pos()
+
+    def _read_pos(self):
+        """读取当前世界坐标 [x, y, z]（m）；pos_body 为空则回退 vel_body 积分估算"""
+        try:
+            state = self._robot.get_state()
+            rs = state.robot_state
+            pos = rs.pos_body
+            if len(pos) >= 2:
+                z = float(pos[2]) if len(pos) >= 3 else 0.0
+                return [float(pos[0]), float(pos[1]), z]
+            vel = rs.vel_body
+            if len(vel) >= 2:
+                now = time.monotonic()
+                if self._pos_estimate is None:
+                    self._pos_estimate = [0.0, 0.0, 0.0]
+                dt = (now - self._last_pos_time) if self._last_pos_time else 0.0
+                self._last_pos_time = now
+                self._pos_estimate[0] += vel[0] * dt
+                self._pos_estimate[1] += vel[1] * dt
+                if len(vel) >= 3:
+                    self._pos_estimate[2] += vel[2] * dt
+                return self._pos_estimate.copy()
+        except Exception:
+            pass
+        return [0.0, 0.0, 0.0]
+
+    @staticmethod
+    def _ideal_square_points(start, yaw_deg, side):
+        """理想正方形轨迹顶点（世界坐标，右转90°，闭合）
+
+        以 start 为起点、初始偏航为朝向，按“前进一边 → 右转90°”推算：
+        u 为前进方向，v 为 u 顺时针转90°（对应右转）后的方向。
+        """
+        h = math.radians(yaw_deg)
+        u = (math.cos(h), math.sin(h))
+        v = (math.sin(h), -math.cos(h))
+        sx, sy = float(start[0]), float(start[1])
+        return [
+            [sx, sy, 0.0],
+            [sx + side * u[0], sy + side * u[1], 0.0],
+            [sx + side * u[0] + side * v[0], sy + side * u[1] + side * v[1], 0.0],
+            [sx + side * v[0], sy + side * v[1], 0.0],
+            [sx, sy, 0.0],
+        ]
+
     def _sample_pos(self):
         """后台线程：以 10Hz 连续读取位置并发送轨迹点
 
@@ -272,7 +351,9 @@ class AutoMoveWorker(QThread):
                 pass
             time.sleep(0.1)  # 10Hz
 
-    # ─── 移动 ─────────────────────────────────────    def _emit_pos(self):
+    # ─── 位置读取 ─────────────────────────────────
+
+    def _emit_pos(self):
         """读取世界坐标位置并发送轨迹点 (x, y, z) m
 
         优先使用 pos_body（IMU/里程计融合定位）；

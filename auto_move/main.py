@@ -53,8 +53,9 @@ class MainWindow(QMainWindow):
         form = QFormLayout(grp)
 
         self.mode_combo = QComboBox()
-        self.mode_combo.addItems(["前后来回", "仅前进", "仅后退"])
+        self.mode_combo.addItems(["前后来回", "仅前进", "仅后退", "正方形"])
         self.mode_combo.setStyleSheet(self._input_style())
+        self.mode_combo.currentIndexChanged.connect(self._on_mode_changed)
         form.addRow("运动模式:", self.mode_combo)
 
         self.dist_spin = QDoubleSpinBox()
@@ -65,6 +66,16 @@ class MainWindow(QMainWindow):
         self.dist_spin.setSuffix(" m")
         self.dist_spin.setStyleSheet(self._input_style())
         form.addRow("移动距离:", self.dist_spin)
+
+        self.side_spin = QDoubleSpinBox()
+        self.side_spin.setRange(0.1, 10.0)  # 边长上限 10 m
+        self.side_spin.setDecimals(1)
+        self.side_spin.setValue(1.0)
+        self.side_spin.setSingleStep(0.1)
+        self.side_spin.setSuffix(" m")
+        self.side_spin.setEnabled(False)   # 仅正方形模式启用
+        self.side_spin.setStyleSheet(self._input_style())
+        form.addRow("正方形边长:", self.side_spin)
 
         # 循环次数 + 无限循环开关
         rep_row = QHBoxLayout()
@@ -185,10 +196,14 @@ class MainWindow(QMainWindow):
                                      "QPushButton:hover { background:#f57c00; }")
         btn_clear_traj.clicked.connect(self.traj_plot.clear)
         v4.addWidget(btn_clear_traj)
-        hint = QLabel("左键平移 | 右键旋转 | 滚轮缩放 | R 重置")
+        hint = QLabel("左/中键平移 | 右键旋转 | 滚轮缩放 | WASDQE飞行 | R重置")
         hint.setStyleSheet("color:#888; font:11px;")
         hint.setAlignment(Qt.AlignCenter)
         v4.addWidget(hint)
+        legend = QLabel("橙色线: 理想轨迹（正方形模式）")
+        legend.setStyleSheet("color:#ff9800; font:11px;")
+        legend.setAlignment(Qt.AlignCenter)
+        v4.addWidget(legend)
         right_layout.addWidget(grp4, 1)
 
         # 日志
@@ -209,6 +224,7 @@ class MainWindow(QMainWindow):
         self._worker = AutoMoveWorker(addr=self.addr_edit.text().strip())
         self._worker.progress.connect(self._on_progress)
         self._worker.pos_ready.connect(self._on_pos)
+        self._worker.ideal_path.connect(self.traj_plot.set_ideal_path)
         self._worker.imu_data.connect(self._on_imu_data)
         self._worker.log_msg.connect(self._log_msg)
         self._worker.connected.connect(self._on_connected)
@@ -276,8 +292,10 @@ class MainWindow(QMainWindow):
         self._worker.set_address(addr)
 
         # 同步参数到工作线程
-        self._worker.mode = ["back_and_forth", "forward_only", "backward_only"][self.mode_combo.currentIndex()]
+        mode_idx = self.mode_combo.currentIndex()
+        self._worker.mode = ["back_and_forth", "forward_only", "backward_only", "square"][mode_idx]
         self._worker.distance = self.dist_spin.value()
+        self._worker.side_len = self.side_spin.value()
         self._worker.repetitions = self.rep_spin.value()
         self._worker.infinite = self.infinite_check.isChecked()
         self._worker.speed_ratio = self.speed_spin.value()
@@ -293,8 +311,12 @@ class MainWindow(QMainWindow):
         self.traj_plot.clear()   # 每次启动清空轨迹
         self._log_msg("─" * 40)
         loop_txt = "无限" if self.infinite_check.isChecked() else f"{self.rep_spin.value()}次"
-        self._log_msg(f"[{self._ts()}] [INFO] 启动: 地址={addr} 模式={self.mode_combo.currentText()} "
-                      f"距离={self.dist_spin.value()}m 循环={loop_txt} 速度={self.speed_spin.value()}")
+        if self.mode_combo.currentText() == "正方形":
+            self._log_msg(f"[{self._ts()}] [INFO] 启动: 地址={addr} 模式=正方形 "
+                          f"边长={self.side_spin.value()}m 循环={loop_txt} 速度={self.speed_spin.value()}")
+        else:
+            self._log_msg(f"[{self._ts()}] [INFO] 启动: 地址={addr} 模式={self.mode_combo.currentText()} "
+                          f"距离={self.dist_spin.value()}m 循环={loop_txt} 速度={self.speed_spin.value()}")
         self._worker.start()
 
     def _on_speed_slider(self, val):
@@ -304,6 +326,12 @@ class MainWindow(QMainWindow):
         # 运行中实时生效，未运行时仅保存数值
         if self._running:
             self._worker.update_speed(val)
+
+    def _on_mode_changed(self, idx):
+        """运动模式切换：正方形模式启用边长输入，禁用直线移动距离"""
+        is_square = self.mode_combo.itemText(idx) == "正方形"
+        self.side_spin.setEnabled(is_square)
+        self.dist_spin.setEnabled(not is_square)
 
     def _stop(self):
         """请求停止任务"""

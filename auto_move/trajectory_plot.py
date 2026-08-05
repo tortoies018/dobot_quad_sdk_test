@@ -1,10 +1,11 @@
 """
 IMU 轨迹绘图控件——使用 PyOpenGL / pyqtgraph 绘制机器人在世界坐标系中的 3D 运动轨迹。
 
-交互方式：
-- 左键拖拽：平移视角（Pan）
+交互方式（Unity 风格）：
+- 左键 / 中键拖拽：平移视角（Pan）
 - 右键拖拽：环绕视角（Orbit）
 - 滚轮：缩放
+- WASDQE：飞行镜头（W/S 沿视线前后，A/D 左右，Q/E 上下，保持相机朝向）
 - R 键：重置视角
 """
 
@@ -12,6 +13,7 @@ import math
 
 import numpy as np
 import pyqtgraph.opengl as gl
+from pyqtgraph import Vector
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QSizePolicy
 
@@ -30,6 +32,7 @@ COLOR_ORIGIN_Z = np.array([0.2, 0.4, 0.86, 1.0], dtype=np.float32)
 COLOR_IMU_X = np.array([0.9, 0.2, 0.2, 1.0], dtype=np.float32)
 COLOR_IMU_Y = np.array([0.2, 0.75, 0.2, 1.0], dtype=np.float32)
 COLOR_IMU_Z = np.array([0.2, 0.5, 0.9, 1.0], dtype=np.float32)
+COLOR_IDEAL = np.array([0.95, 0.55, 0.05, 1.0], dtype=np.float32)  # 理想轨迹（橙）
 
 
 def _repeat_color(color, n):
@@ -85,6 +88,10 @@ class TrajectoryPlot3D(gl.GLViewWidget):
         # IMU 本体坐标轴
         self._imu_axes = gl.GLLinePlotItem(mode="lines", width=3, glOptions='translucent')
         self.addItem(self._imu_axes)
+
+        # 理想轨迹（如正方形的期望路径）
+        self._ideal = gl.GLLinePlotItem(mode="lines", width=2, glOptions='translucent')
+        self.addItem(self._ideal)
 
         self._last_mouse_pos = None
         self._drag_button = None
@@ -195,8 +202,23 @@ class TrajectoryPlot3D(gl.GLViewWidget):
     def clear(self):
         self._points.clear()
         self._clear_pts.clear()
+        self.set_ideal_path(None)
         self._update()
         self.setCameraPosition(distance=6.0, elevation=40, azimuth=45)
+
+    def set_ideal_path(self, points):
+        """设置理想轨迹（如正方形期望路径），points 为 [x,y,z] 列表"""
+        if not points:
+            self._ideal.setData(
+                pos=np.zeros((0, 3), dtype=np.float32),
+                color=_repeat_color(COLOR_IDEAL, 0),
+            )
+            return
+        pts = np.array(points, dtype=np.float32)
+        self._ideal.setData(
+            pos=pts,
+            color=_repeat_color(COLOR_IDEAL, len(pts)),
+        )
 
     def _update(self):
         if not self._points:
@@ -262,12 +284,12 @@ class TrajectoryPlot3D(gl.GLViewWidget):
             return
         delta = ev.position() - self._last_mouse_pos
         self._last_mouse_pos = ev.position()
-        if self._drag_button == Qt.LeftButton:
+        if self._drag_button in (Qt.LeftButton, Qt.MiddleButton):
+            # 左键 / 中键：平移视角（Pan）
             dist = max(0.1, self.opts.get("distance", 6.0))
             self.pan(delta.x() * 0.02 * dist, delta.y() * 0.02 * dist, 0, relative="view")
         elif self._drag_button == Qt.RightButton:
-            self.orbit(-delta.x() * 0.4, delta.y() * 0.4)
-        elif self._drag_button == Qt.MiddleButton:
+            # 右键：环绕视角（Orbit）
             self.orbit(-delta.x() * 0.4, delta.y() * 0.4)
         else:
             super().mouseMoveEvent(ev)
@@ -287,7 +309,48 @@ class TrajectoryPlot3D(gl.GLViewWidget):
         ev.accept()
 
     def keyPressEvent(self, ev):
-        if ev.key() == Qt.Key_R:
+        key = ev.key()
+        if key == Qt.Key_R:
             self.setCameraPosition(distance=6.0, elevation=40, azimuth=45)
+            return
+        if key in (Qt.Key_W, Qt.Key_S, Qt.Key_A, Qt.Key_D, Qt.Key_Q, Qt.Key_E):
+            self._move_camera_by_key(key)
+            ev.accept()
+            return
+        super().keyPressEvent(ev)
+
+    def _move_camera_by_key(self, key):
+        """Unity 式飞行镜头：W/S 沿视线前后，A/D 水平左右，Q/E 垂直升降
+
+        相机按自身朝向平移（保持姿态与距离），而非绕目标缩放，
+        因此 W 没有距离下限，靠近物体时仍可前进。
+        """
+        dist = self.opts.get("distance", 6.0)
+        step = max(0.02, dist * 0.05)   # 步长随距离缩放
+
+        elev = math.radians(self.opts.get("elevation", 30))
+        azim = math.radians(self.opts.get("azimuth", 45))
+
+        # 视线方向（相机 → 目标）与相机右方向（水平面内）
+        vx = math.cos(elev) * math.cos(azim)
+        vy = math.cos(elev) * math.sin(azim)
+        vz = math.sin(elev)
+        rx, ry = -math.sin(azim), math.cos(azim)
+
+        c = self.opts.get("center")
+        dx = dy = dz = 0.0
+        if key == Qt.Key_W:                      # 前进（沿视线，相机看向 -v）
+            dx, dy, dz = -vx * step, -vy * step, -vz * step
+        elif key == Qt.Key_S:                    # 后退（逆视线）
+            dx, dy, dz = vx * step, vy * step, vz * step
+        elif key == Qt.Key_A:                    # 左移
+            dx, dy = -rx * step, -ry * step
+        elif key == Qt.Key_D:                    # 右移
+            dx, dy = rx * step, ry * step
+        elif key == Qt.Key_Q:                    # 下降
+            dz = -step
+        elif key == Qt.Key_E:                    # 上升
+            dz = step
         else:
-            super().keyPressEvent(ev)
+            return
+        self.setCameraPosition(pos=Vector(c.x() + dx, c.y() + dy, c.z() + dz))
