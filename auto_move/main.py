@@ -40,11 +40,20 @@ class MainWindow(QMainWindow):
         grp_conn = QGroupBox("连接设置")
         grp_conn.setStyleSheet(self._grp_style("#4fc3f7"))
         form_conn = QFormLayout(grp_conn)
+        conn_row = QHBoxLayout()
         self.addr_edit = QLineEdit("10.30.12.196:50051")
         self.addr_edit.setPlaceholderText("例如 10.30.12.154:50051")
         self.addr_edit.setStyleSheet(self._input_style())
         self.addr_edit.setToolTip("机器人 gRPC 地址，格式：IP:端口")
-        form_conn.addRow("机器人地址:", self.addr_edit)
+        conn_row.addWidget(self.addr_edit, 1)
+        self.btn_connect = QPushButton("连接")
+        self.btn_connect.setStyleSheet(self._btn_style("#1565c0", "#1e88e5"))
+        self.btn_connect.clicked.connect(self._on_connect)
+        conn_row.addWidget(self.btn_connect)
+        form_conn.addRow("机器人地址:", conn_row)
+        note = QLabel("连接后轨迹/IMU 持续工作，移动指令独立下发")
+        note.setStyleSheet("color:#a8b3bc; font:11px;")
+        form_conn.addRow(note)
         left_layout.addWidget(grp_conn)
 
         # ── 移动参数 ──
@@ -280,34 +289,55 @@ class MainWindow(QMainWindow):
 
     # ─── 控制 ───────────────────────────────────────
 
-    def _start(self):
-        """读取参数并启动任务"""
-        if self._running:
+    def _on_connect(self):
+        """连接机器人：连接后轨迹/IMU 持续工作，与移动指令独立"""
+        if self._worker.isRunning():
             return
-
-        # 校验并同步连接地址
         addr = self.addr_edit.text().strip()
         if not self._validate_addr(addr):
             return
         self._worker.set_address(addr)
+        self.btn_connect.setEnabled(False)
+        self.addr_edit.setEnabled(False)
+        self.lbl_status_conn.setText("连接中...")
+        self._log_msg(f"[{self._ts()}] [INFO] 正在连接 {addr} ...")
+        self._worker.start()
 
-        # 同步参数到工作线程
+    def _start(self):
+        """读取参数并下发移动指令（连接后即可多次下发）"""
+        if self._running:
+            return
+
+        addr = self.addr_edit.text().strip()
+        if not self._validate_addr(addr):
+            return
+
+        # 未连接则先连接
+        if not self._worker.isRunning():
+            self._worker.set_address(addr)
+            self.btn_connect.setEnabled(False)
+            self.addr_edit.setEnabled(False)
+            self.lbl_status_conn.setText("连接中...")
+            self._worker.start()
+
+        # 组装移动指令
         mode_idx = self.mode_combo.currentIndex()
-        self._worker.mode = ["back_and_forth", "forward_only", "backward_only", "square"][mode_idx]
-        self._worker.distance = self.dist_spin.value()
-        self._worker.side_len = self.side_spin.value()
-        self._worker.repetitions = self.rep_spin.value()
-        self._worker.infinite = self.infinite_check.isChecked()
-        self._worker.speed_ratio = self.speed_spin.value()
-        self._worker.settle_time = self.settle_spin.value()
+        params = {
+            "mode": ["back_and_forth", "forward_only", "backward_only", "square"][mode_idx],
+            "distance": self.dist_spin.value(),
+            "side_len": self.side_spin.value(),
+            "repetitions": self.rep_spin.value(),
+            "infinite": self.infinite_check.isChecked(),
+            "speed_ratio": self.speed_spin.value(),
+            "settle_time": self.settle_spin.value(),
+        }
+        self._worker.start_move(params)
 
         self._running = True
         self.btn_start.setEnabled(False)
         self.btn_stop.setEnabled(True)
-        self.addr_edit.setEnabled(False)
         self.progress_bar.setValue(0)
         self.lbl_stage.setText("连接中...")
-        self.lbl_status_conn.setText("连接中...")
         self.traj_plot.clear()   # 每次启动清空轨迹
         self._log_msg("─" * 40)
         loop_txt = "无限" if self.infinite_check.isChecked() else f"{self.rep_spin.value()}次"
@@ -317,7 +347,7 @@ class MainWindow(QMainWindow):
         else:
             self._log_msg(f"[{self._ts()}] [INFO] 启动: 地址={addr} 模式={self.mode_combo.currentText()} "
                           f"距离={self.dist_spin.value()}m 循环={loop_txt} 速度={self.speed_spin.value()}")
-        self._worker.start()
+        self._log_msg(f"[{self._ts()}] [INFO] 指令已下发（轨迹/IMU 采样持续运行）")
 
     def _on_speed_slider(self, val):
         """速度滑块实时调节：更新显示并同步到工作线程"""
@@ -334,9 +364,9 @@ class MainWindow(QMainWindow):
         self.dist_spin.setEnabled(not is_square)
 
     def _stop(self):
-        """请求停止任务"""
-        self._worker.stop()
-        self._log_msg(f"[{self._ts()}] [INFO] 已请求停止...")
+        """请求停止当前移动指令（轨迹/IMU 采样继续）"""
+        self._worker.stop_move()
+        self._log_msg(f"[{self._ts()}] [INFO] 已请求停止移动...")
 
     # ─── 信号回调 ───────────────────────────────────
 
@@ -359,24 +389,27 @@ class MainWindow(QMainWindow):
             self._sb.setStyleSheet("color:#69f0ae; background:#26292d; font:12px;")
             self.lbl_status_conn.setText("已连接")
             self.lbl_status_conn.setStyleSheet("color:#69f0ae; font:13px monospace;")
+            self.btn_connect.setText("已连接")
+            self.btn_connect.setEnabled(False)
+            self.addr_edit.setEnabled(False)
         else:
             self.lbl_status_conn.setText("未连接")
             self.lbl_status_conn.setStyleSheet("color:#ef5350; font:13px monospace;")
+            self.btn_connect.setText("连接")
+            self.btn_connect.setEnabled(True)
+            self.addr_edit.setEnabled(True)
 
     def _on_finished(self, msg):
-        """任务结束：恢复按钮"""
+        """移动指令结束：恢复按钮（连接与采样保持）"""
         self._running = False
         self.btn_start.setEnabled(True)
         self.btn_stop.setEnabled(False)
-        self.addr_edit.setEnabled(True)
         self.lbl_stage.setText("完成" if "完成" in msg else "停止")
-        self.lbl_status_conn.setText("待机")
-        self.lbl_status_conn.setStyleSheet("color:#e0e0e0; font:13px monospace;")
         # 恢复进度条为有限循环模式
         self.progress_bar.setRange(0, 100)
         self.progress_bar.setValue(0)
         self.progress_bar.setFormat("")
-        self._log_msg(f"[{self._ts()}] [INFO] 任务结束: {msg}")
+        self._log_msg(f"[{self._ts()}] [INFO] 移动结束: {msg}（轨迹/IMU 采样继续运行）")
 
     @staticmethod
     def _ts():
@@ -404,7 +437,7 @@ class MainWindow(QMainWindow):
         self._log.moveCursor(QTextCursor.MoveOperation.End)
 
     def closeEvent(self, event):
-        self._worker.stop()
+        self._worker.shutdown()
         self._worker.wait(2000)
         super().closeEvent(event)
 

@@ -1,8 +1,12 @@
 """
 自动前后移动工作线程——使用 gRPC 高层 API 驱动机器人往复运动。
+
+线程常驻：连接后轨迹/IMU 采样一直工作，与移动指令独立；
+移动指令通过命令队列逐条下发。
 """
 
 import math
+import queue
 import threading
 import time
 
@@ -12,7 +16,7 @@ from dobot_quad import RobotClient
 
 
 class AutoMoveWorker(QThread):
-    """后台线程：连接机器狗，循环前进/后退"""
+    """后台线程：连接机器狗；轨迹/IMU 常驻采样，移动指令排队执行"""
 
     # 进度信号：当前循环, 总循环, 阶段描述
     progress = Signal(int, int, str)
@@ -28,14 +32,16 @@ class AutoMoveWorker(QThread):
         self._addr = addr
         self._robot = None
         self._is_wheel = False   # 是否为轮足机器人
-        self._running = True
+        self._running = True     # 线程存活（直到 shutdown）
+        self._move_running = False   # 当前是否有移动指令在运行
         self._pos_estimate = None    # vel_body 积分位置回退
         self._last_pos_time = None
-        self._sampling = False       # 后台位置采样开关
+        self._sampling = False       # 后台采样开关（常驻）
         self._initial_rpy = None     # 初始姿态基准（3D 坐标显示用）
         self._initial_yaw = 0.0      # 初始偏航角（航向矫正基准）
+        self._cmd_queue = queue.Queue()   # 移动指令队列
 
-        # 可配置参数（由 GUI 设置）
+        # 可配置参数（由 GUI 下发）
         self.mode = "back_and_forth"   # back_and_forth / forward_only / backward_only / square
         self.distance = 1.0            # 直线单次移动距离 (m)
         self.side_len = 1.0            # 正方形边长 (m)
@@ -45,13 +51,30 @@ class AutoMoveWorker(QThread):
         self.settle_time = 0.5         # 移动/转向后姿态稳定等待时间 (秒)
         self.yaw_threshold = 3.0       # 航向矫正阈值 (度)
 
-    def stop(self):
-        """请求停止"""
-        self._running = False
+    # ─── 控制接口（主线程调用） ────────────────────
 
     def set_address(self, addr):
         """更新机器人连接地址（在 start() 前调用）"""
         self._addr = addr
+
+    def start_move(self, params):
+        """下发一条移动指令（连接后排队执行）"""
+        self._move_running = True
+        self._cmd_queue.put(params)
+
+    def stop_move(self):
+        """停止当前移动指令（轨迹/IMU 采样不受影响）"""
+        self._move_running = False
+
+    def stop(self):
+        """兼容旧接口：停止当前移动"""
+        self._move_running = False
+
+    def shutdown(self):
+        """完全关闭：结束线程并停止采样"""
+        self._running = False
+        self._move_running = False
+        self._cmd_queue.put(None)   # 唤醒命令循环
 
     def _log(self, level, msg):
         """发送带时间戳和信息级别的日志： [HH:MM:SS] [级别] 消息"""
@@ -68,7 +91,7 @@ class AutoMoveWorker(QThread):
             except Exception as e:
                 self._log("ERROR", f"实时更新速度比失败: {e}")
 
-    # ─── 主流程 ─────────────────────────────────────
+    # ─── 主流程：连接 + 常驻采样 + 指令循环 ────────
 
     def run(self):
         try:
@@ -87,30 +110,57 @@ class AutoMoveWorker(QThread):
         except Exception as e:
             self._log("ERROR", f"设置速度比失败: {e}")
 
-        # 记录初始姿态作为 3D 坐标显示基准（站平时本体 Z 轴竖直）
+        # 启动常驻采样线程：轨迹/IMU 一直工作，与移动指令独立
+        self._sampling = True
+        sampler = threading.Thread(target=self._sample_pos, daemon=True)
+        sampler.start()
+
+        # 等待并逐条执行移动指令
+        while self._running:
+            try:
+                cmd = self._cmd_queue.get(timeout=0.2)
+            except queue.Empty:
+                continue
+            if cmd is None:
+                break
+            self._execute_move(cmd)
+
+        self._sampling = False   # 线程结束，停止采样
+
+    def _execute_move(self, cmd):
+        """执行一条移动指令（采样线程不中断）"""
+        self.mode = cmd.get("mode", "back_and_forth")
+        self.distance = cmd.get("distance", 1.0)
+        self.side_len = cmd.get("side_len", 1.0)
+        self.repetitions = cmd.get("repetitions", 3)
+        self.infinite = cmd.get("infinite", False)
+        self.speed_ratio = cmd.get("speed_ratio", 50)
+        self.settle_time = cmd.get("settle_time", 0.5)
+
+        try:
+            self._robot.set_speed_ratio(self.speed_ratio)
+            self._log("INFO", f"速度比已设为 {self.speed_ratio}")
+        except Exception as e:
+            self._log("ERROR", f"设置速度比失败: {e}")
+
+        # 记录本次移动的姿态/偏航基准（3D 显示与航向矫正用）
         try:
             state = self._robot.get_state()
             ori = state.robot_state.ori_body
             self._initial_rpy = [float(v) for v in ori] if len(ori) >= 3 else [0.0, 0.0, 0.0]
+            self._initial_yaw = math.degrees(self._initial_rpy[2])
             self._log(
                 "INFO",
                 f"姿态基准: roll={math.degrees(self._initial_rpy[0]):.1f}° "
                 f"pitch={math.degrees(self._initial_rpy[1]):.1f}° "
-                f"yaw={math.degrees(self._initial_rpy[2]):.1f}°",
+                f"yaw={self._initial_yaw:.1f}°",
             )
         except Exception as e:
             self._log("ERROR", f"读取初始姿态失败: {e}")
             self._initial_rpy = [0.0, 0.0, 0.0]
-
-        # 记录初始偏航角作为航向矫正基准
-        try:
-            self._initial_yaw = self._get_yaw()
-            self._log("INFO", f"初始偏航角: {self._initial_yaw:.2f}°")
-        except Exception as e:
-            self._log("ERROR", f"读取初始偏航角失败: {e}")
             self._initial_yaw = 0.0
 
-        # 记录初始位置（轨迹起点）
+        # 记录轨迹起点
         self._emit_pos()
 
         # 正方形模式：先计算并发送理想轨迹
@@ -124,18 +174,13 @@ class AutoMoveWorker(QThread):
                 f"边长{self.side_len:.2f}m",
             )
 
-        # 启动后台连续位置采样线程（平滑绘制轨迹）
-        self._sampling = True
-        sampler = threading.Thread(target=self._sample_pos, daemon=True)
-        sampler.start()
-
         do_forward = self.mode in ("back_and_forth", "forward_only")
         do_backward = self.mode in ("back_and_forth", "backward_only")
         do_square = self.mode == "square"
 
         try:
             cycle = 0
-            while self._running:
+            while self._running and self._move_running:
                 cycle += 1
                 # 有限循环：达到次数后退出；无限循环：直到手动停止
                 if not self.infinite and cycle > self.repetitions:
@@ -145,25 +190,23 @@ class AutoMoveWorker(QThread):
                 if do_square:
                     self.progress.emit(cycle, total, f"正方形 边长{self.side_len:.2f}m")
                     self._run_square(cycle, total)
-                    if not self._running:
-                        break
                 elif do_forward:
                     self.progress.emit(cycle, total, f"前进 {self.distance:.2f}m")
                     self._move("forward", self.distance)
-                    if not self._running:
+                    if not self._move_running:
                         break
                     self._correct_heading_once()   # 移动完整距离后矫正一次航向
 
                 if do_backward:
                     self.progress.emit(cycle, total, f"后退 {self.distance:.2f}m")
                     self._move("backward", self.distance)
-                    if not self._running:
+                    if not self._move_running:
                         break
                     self._correct_heading_once()   # 移动完整距离后矫正一次航向
 
                 self._log("INFO", f"第 {cycle} 次循环完成")
 
-            if self._running and not self.infinite:
+            if self._move_running and not self.infinite:
                 self.finished_ok.emit(f"完成 {self.repetitions} 次循环")
             else:
                 self.finished_ok.emit("已手动停止")
@@ -171,7 +214,7 @@ class AutoMoveWorker(QThread):
             self._log("ERROR", f"执行出错: {e}")
             self.finished_ok.emit(f"出错: {e}")
         finally:
-            self._sampling = False   # 停止后台位置采样
+            self._move_running = False   # 移动指令结束
 
     # ─── 移动 ─────────────────────────────────────
 
@@ -228,11 +271,11 @@ class AutoMoveWorker(QThread):
     def _run_square(self, cycle, total):
         """正方形运动：前进一条边 → 右转90° → 前进 → ... 共 4 条边"""
         for i in range(4):
-            if not self._running:
+            if not (self._running and self._move_running):
                 return
             self.progress.emit(cycle, total, f"正方形 第{i + 1}/4 边")
             self._move("forward", self.side_len)      # 走一条边
-            if not self._running:
+            if not (self._running and self._move_running):
                 return
             if i < 3:
                 self._robot.rotate_right(90, show_progress=False)   # 右转90°（转角）
@@ -284,10 +327,9 @@ class AutoMoveWorker(QThread):
         ]
 
     def _sample_pos(self):
-        """后台线程：以 10Hz 连续读取位置并发送轨迹点
+        """后台线程：以 10Hz 连续读取位置并发送轨迹点（常驻，与指令独立）
 
         优先 pos_body（世界坐标）；为空则用 vel_body 积分估算。
-        这样无论 pos_body 是否可用，都能绘制连续平滑轨迹。
         """
         last = time.monotonic()
         diag_done = False
