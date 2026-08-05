@@ -179,6 +179,18 @@ class MainWindow(QMainWindow):
         self.lbl_status_pos = QLabel("—")
         self.lbl_status_pos.setStyleSheet("color:#e0e0e0; font:13px monospace;")
         form_status.addRow("当前位置:", self.lbl_status_pos)
+        self.lbl_status_quat = QLabel("—")
+        self.lbl_status_quat.setStyleSheet("color:#e0e0e0; font:13px monospace;")
+        form_status.addRow("四元数:", self.lbl_status_quat)
+        self.lbl_status_gyro = QLabel("—")
+        self.lbl_status_gyro.setStyleSheet("color:#e0e0e0; font:13px monospace;")
+        form_status.addRow("陀螺仪(rad/s):", self.lbl_status_gyro)
+        self.lbl_status_accel = QLabel("—")
+        self.lbl_status_accel.setStyleSheet("color:#e0e0e0; font:13px monospace;")
+        form_status.addRow("加速度(m/s²):", self.lbl_status_accel)
+        self.lbl_status_rpy = QLabel("—")
+        self.lbl_status_rpy.setStyleSheet("color:#e0e0e0; font:13px monospace;")
+        form_status.addRow("欧拉角(rad):", self.lbl_status_rpy)
         self.lbl_status_yaw = QLabel("—")
         self.lbl_status_yaw.setStyleSheet("color:#e0e0e0; font:13px monospace;")
         form_status.addRow("偏航角:", self.lbl_status_yaw)
@@ -253,15 +265,41 @@ class MainWindow(QMainWindow):
         self._worker = AutoMoveWorker(addr=self.addr_edit.text().strip())
         self._worker.progress.connect(self._on_progress)
         self._worker.pos_ready.connect(self._on_pos)
+        self._worker.imu_data.connect(self._on_imu_data)
         self._worker.log_msg.connect(self._log_msg)
         self._worker.connected.connect(self._on_connected)
         self._worker.finished_ok.connect(self._on_finished)
         self._running = False
 
     def _on_pos(self, x, y, z):
-        """收到 IMU 位置：添加到 3D 轨迹图并更新状态列表"""
+        """收到 IMU 位置：添加到 3D 轨迹图"""
         self.traj_plot.add_point(x, y, z)
-        self.lbl_status_pos.setText(f"{x:.3f}, {y:.3f}, {z:.3f}")
+
+    def _on_imu_data(self, data):
+        """收到完整 IMU 数据：更新状态列表和 3D 坐标轴"""
+        pos = data.get("pos", [0.0, 0.0, 0.0])
+        quat = data.get("quat", [1.0, 0.0, 0.0, 0.0])
+        gyro = data.get("gyro", [0.0, 0.0, 0.0])
+        accel = data.get("accel", [0.0, 0.0, 0.0])
+        rpy = data.get("rpy", [0.0, 0.0, 0.0])
+        rpy_abs = data.get("rpy_abs", rpy)
+
+        self.lbl_status_pos.setText(f"{pos[0]:.3f}, {pos[1]:.3f}, {pos[2]:.3f}")
+        self.lbl_status_quat.setText(
+            f"w={quat[0]:.3f} x={quat[1]:.3f} y={quat[2]:.3f} z={quat[3]:.3f}"
+        )
+        self.lbl_status_gyro.setText(
+            f"{gyro[0]:.3f}, {gyro[1]:.3f}, {gyro[2]:.3f}"
+        )
+        self.lbl_status_accel.setText(
+            f"{accel[0]:.3f}, {accel[1]:.3f}, {accel[2]:.3f}"
+        )
+        self.lbl_status_rpy.setText(
+            f"r={rpy_abs[0]:.3f} p={rpy_abs[1]:.3f} y={rpy_abs[2]:.3f}"
+        )
+
+        # 更新 3D 视图中的 IMU 本体坐标轴（相对初始姿态，站平时竖直）
+        self.traj_plot.update_imu_axes(pos[0], pos[1], pos[2], rpy[0], rpy[1], rpy[2])
 
     # ─── 样式辅助 ───────────────────────────────────
 

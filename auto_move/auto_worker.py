@@ -18,6 +18,7 @@ class AutoMoveWorker(QThread):
     # 进度信号：当前循环, 总循环, 阶段描述, 当前偏航角(度), 矫正量(度)
     progress = Signal(int, int, str, float, float)
     pos_ready = Signal(float, float, float)  # 世界坐标位置 (x, y, z) m，用于 3D 轨迹绘制
+    imu_data = Signal(dict)        # 完整 IMU 数据（位置、四元数、陀螺仪、加速度、欧拉角）
     log_msg = Signal(str)          # 日志
     connected = Signal(bool)       # 连接状态
     finished_ok = Signal(str)      # 完成/中止消息
@@ -31,6 +32,7 @@ class AutoMoveWorker(QThread):
         self._pos_estimate = None    # vel_body 积分位置回退
         self._last_pos_time = None
         self._sampling = False       # 后台位置采样开关
+        self._initial_rpy = None     # 初始姿态基准（3D 坐标显示用）
 
         # 可配置参数（由 GUI 设置）
         self.mode = "back_and_forth"   # back_and_forth / forward_only / backward_only
@@ -93,6 +95,21 @@ class AutoMoveWorker(QThread):
         except Exception as e:
             self._log("ERROR", f"读取初始偏航角失败: {e}")
             self._initial_yaw = 0.0
+
+        # 记录初始姿态作为 3D 坐标显示基准（站平时本体 Z 轴竖直）
+        try:
+            state = self._robot.get_state()
+            ori = state.robot_state.ori_body
+            self._initial_rpy = [float(v) for v in ori] if len(ori) >= 3 else [0.0, 0.0, 0.0]
+            self._log(
+                "INFO",
+                f"姿态基准: roll={math.degrees(self._initial_rpy[0]):.1f}° "
+                f"pitch={math.degrees(self._initial_rpy[1]):.1f}° "
+                f"yaw={math.degrees(self._initial_rpy[2]):.1f}°",
+            )
+        except Exception as e:
+            self._log("ERROR", f"读取初始姿态失败: {e}")
+            self._initial_rpy = [0.0, 0.0, 0.0]
 
         # 记录初始位置（轨迹起点）
         self._emit_pos()
@@ -183,14 +200,15 @@ class AutoMoveWorker(QThread):
                 rs = state.robot_state
                 pos = rs.pos_body
                 vel = rs.vel_body
+                # 组装完整 IMU 数据字典
+                imu = {}
                 if len(pos) >= 2:
                     if not diag_done:
                         self._log("INFO", "轨迹数据源: pos_body（世界坐标）")
                         diag_done = True
-                    if len(pos) >= 3:
-                        self.pos_ready.emit(float(pos[0]), float(pos[1]), float(pos[2]))
-                    else:
-                        self.pos_ready.emit(float(pos[0]), float(pos[1]), 0.0)
+                    z = float(pos[2]) if len(pos) >= 3 else 0.0
+                    self.pos_ready.emit(float(pos[0]), float(pos[1]), z)
+                    imu["pos"] = [float(pos[0]), float(pos[1]), z]
                 elif len(vel) >= 2:
                     if not diag_done:
                         self._log("INFO", "轨迹数据源: vel_body 积分")
@@ -209,10 +227,45 @@ class AutoMoveWorker(QThread):
                         self._pos_estimate[1],
                         self._pos_estimate[2],
                     )
+                    imu["pos"] = self._pos_estimate.copy()
                 else:
                     if not diag_done:
                         self._log("ERROR", "pos_body 和 vel_body 均为空，高层 API 不提供位置，轨迹无法绘制")
                         diag_done = True
+                    imu["pos"] = [0.0, 0.0, 0.0]
+
+                # 读取姿态与传感器数据
+                try:
+                    ori = rs.ori_body  # [roll, pitch, yaw] rad
+                    rpy_abs = [float(v) for v in ori] if len(ori) >= 3 else [0.0, 0.0, 0.0]
+                    ref = self._initial_rpy or [0.0, 0.0, 0.0]
+                    # 相对初始姿态的欧拉角：站平时本体坐标轴保持竖直
+                    imu["rpy"] = [
+                        self._normalize_rad(rpy_abs[0] - ref[0]),
+                        self._normalize_rad(rpy_abs[1] - ref[1]),
+                        self._normalize_rad(rpy_abs[2] - ref[2]),
+                    ]
+                    imu["rpy_abs"] = rpy_abs
+                except Exception:
+                    imu["rpy"] = [0.0, 0.0, 0.0]
+                    imu["rpy_abs"] = [0.0, 0.0, 0.0]
+                try:
+                    q = rs.quat_body  # [w, x, y, z]
+                    imu["quat"] = [float(v) for v in q] if len(q) >= 4 else [1.0, 0.0, 0.0, 0.0]
+                except Exception:
+                    imu["quat"] = [1.0, 0.0, 0.0, 0.0]
+                try:
+                    g = rs.gyro_body  # [wx, wy, wz] rad/s
+                    imu["gyro"] = [float(v) for v in g] if len(g) >= 3 else [0.0, 0.0, 0.0]
+                except Exception:
+                    imu["gyro"] = [0.0, 0.0, 0.0]
+                try:
+                    a = rs.accel_body  # [ax, ay, az] m/s²
+                    imu["accel"] = [float(v) for v in a] if len(a) >= 3 else [0.0, 0.0, 0.0]
+                except Exception:
+                    imu["accel"] = [0.0, 0.0, 0.0]
+
+                self.imu_data.emit(imu)
             except Exception:
                 pass
             time.sleep(0.1)  # 10Hz
@@ -327,3 +380,12 @@ class AutoMoveWorker(QThread):
         while deg < -180:
             deg += 360
         return deg
+
+    @staticmethod
+    def _normalize_rad(rad):
+        """将弧度归一化到 [-π, π]"""
+        while rad > math.pi:
+            rad -= 2 * math.pi
+        while rad < -math.pi:
+            rad += 2 * math.pi
+        return rad
