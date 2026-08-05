@@ -32,6 +32,7 @@ class AutoMoveWorker(QThread):
         self._last_pos_time = None
         self._sampling = False       # 后台位置采样开关
         self._initial_rpy = None     # 初始姿态基准（3D 坐标显示用）
+        self._initial_yaw = 0.0      # 初始偏航角（航向矫正基准）
 
         # 可配置参数（由 GUI 设置）
         self.mode = "back_and_forth"   # back_and_forth / forward_only / backward_only
@@ -39,7 +40,8 @@ class AutoMoveWorker(QThread):
         self.repetitions = 3           # 循环次数
         self.infinite = False          # 是否无限循环（直到手动停止）
         self.speed_ratio = 50          # 速度比 [10,100]（运行中可实时修改）
-        self.settle_time = 0.5         # 移动后姿态稳定等待时间 (秒)
+        self.settle_time = 0.5         # 移动/转向后姿态稳定等待时间 (秒)
+        self.yaw_threshold = 3.0       # 航向矫正阈值 (度)
 
     def stop(self):
         """请求停止"""
@@ -98,6 +100,14 @@ class AutoMoveWorker(QThread):
             self._log("ERROR", f"读取初始姿态失败: {e}")
             self._initial_rpy = [0.0, 0.0, 0.0]
 
+        # 记录初始偏航角作为航向矫正基准
+        try:
+            self._initial_yaw = self._get_yaw()
+            self._log("INFO", f"初始偏航角: {self._initial_yaw:.2f}°")
+        except Exception as e:
+            self._log("ERROR", f"读取初始偏航角失败: {e}")
+            self._initial_yaw = 0.0
+
         # 记录初始位置（轨迹起点）
         self._emit_pos()
 
@@ -123,12 +133,14 @@ class AutoMoveWorker(QThread):
                     self._move("forward", self.distance)
                     if not self._running:
                         break
+                    self._correct_heading_once()   # 移动完整距离后矫正一次航向
 
                 if do_backward:
                     self.progress.emit(cycle, total, f"后退 {self.distance:.2f}m")
                     self._move("backward", self.distance)
                     if not self._running:
                         break
+                    self._correct_heading_once()   # 移动完整距离后矫正一次航向
 
                 self._log("INFO", f"第 {cycle} 次循环完成")
 
@@ -156,6 +168,41 @@ class AutoMoveWorker(QThread):
             raise
         time.sleep(self.settle_time)  # 等待姿态稳定
         self._emit_pos()              # 移动后记录轨迹点
+
+    def _get_yaw(self):
+        """从 IMU 融合位姿中读取偏航角（度）"""
+        state = self._robot.get_state()
+        rpy = state.robot_state.ori_body  # [roll, pitch, yaw] 弧度
+        return math.degrees(rpy[2])
+
+    def _correct_heading_once(self):
+        """移动完一段完整距离后，按当前偏航误差做一次转向矫正
+
+        不做闭环反复修正：只转一次（误差超出阈值时转误差角），
+        误差在阈值内则不动。
+        """
+        try:
+            yaw = self._get_yaw()
+            err = self._normalize_angle(yaw - self._initial_yaw)
+            if abs(err) <= self.yaw_threshold:
+                self._log(
+                    "INFO",
+                    f"航向: 偏航 {yaw:.2f}°，误差 {err:.2f}°（在阈值内，无需转向）",
+                )
+                return
+            self._log(
+                "INFO",
+                f"航向矫正: 偏航 {yaw:.2f}°，误差 {err:.2f}°，"
+                f"{'右转' if err > 0 else '左转'} {abs(err):.2f}°",
+            )
+            if err > 0:
+                self._robot.rotate_right(abs(err), show_progress=False)
+            else:
+                self._robot.rotate_left(abs(err), show_progress=False)
+            time.sleep(self.settle_time)
+            self._emit_pos()   # 转向后记录轨迹点
+        except Exception as e:
+            self._log("ERROR", f"航向矫正失败: {e}")
 
     def _sample_pos(self):
         """后台线程：以 10Hz 连续读取位置并发送轨迹点
@@ -280,3 +327,12 @@ class AutoMoveWorker(QThread):
         while rad < -math.pi:
             rad += 2 * math.pi
         return rad
+
+    @staticmethod
+    def _normalize_angle(deg):
+        """将角度归一化到 [-180, 180]"""
+        while deg > 180:
+            deg -= 360
+        while deg < -180:
+            deg += 360
+        return deg
