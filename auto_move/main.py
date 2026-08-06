@@ -221,6 +221,12 @@ class MainWindow(QMainWindow):
         legend.setStyleSheet("color:#ff9800; font:11px;")
         legend.setAlignment(Qt.AlignCenter)
         v4.addWidget(legend)
+        self.lbl_command_preview = QLabel("当前指令: 待机")
+        self.lbl_command_preview.setStyleSheet(
+            "color:#df70ff; background:#25272b; border:1px solid #633675; "
+            "border-radius:3px; padding:4px; font:12px monospace;")
+        self.lbl_command_preview.setAlignment(Qt.AlignCenter)
+        v4.addWidget(self.lbl_command_preview)
         # 轨迹和日志都是可调大小的子区域。
         detail_splitter = QSplitter(Qt.Vertical)
         detail_splitter.setChildrenCollapsible(False)
@@ -258,6 +264,7 @@ class MainWindow(QMainWindow):
         self._worker.progress.connect(self._on_progress)
         self._worker.pos_ready.connect(self._on_pos)
         self._worker.ideal_path.connect(self.traj_plot.set_ideal_path)
+        self._worker.command_preview.connect(self._on_command_preview)
         self._worker.imu_data.connect(self._on_imu_data)
         self._worker.log_msg.connect(self._log_msg)
         self._worker.connected.connect(self._on_connected)
@@ -281,6 +288,25 @@ class MainWindow(QMainWindow):
 
         # 更新 3D 视图中的 IMU 本体坐标轴（相对初始姿态，站平时竖直）
         self.traj_plot.update_imu_axes(pos[0], pos[1], pos[2], rpy[0], rpy[1], rpy[2])
+
+    def _on_command_preview(self, command):
+        """显示当前实际下发的转向/移动目标，并刷新 3D 高亮图层。"""
+        self.traj_plot.set_current_command(command)
+        if not command:
+            self.lbl_command_preview.setText("当前指令: 待机")
+            return
+
+        phase = "转向" if command.get("phase") == "turn" else "移动"
+        segment = command.get("segment", 0)
+        stage = "恢复初始朝向" if segment == 0 else f"第 {segment}/4 边 {phase}"
+        target = command.get("target", [0.0, 0.0, 0.0])
+        turn = float(command.get("turn", 0.0))
+        direction = "左" if turn > 0 else "右"
+        turn_text = "无需转向" if abs(turn) <= 0.5 else f"{direction}转 {abs(turn):.1f}°"
+        self.lbl_command_preview.setText(
+            f"当前指令: {stage}　目标({target[0]:.2f}, {target[1]:.2f})　"
+            f"{turn_text}　剩余 {float(command.get('remaining', 0.0)):.3f}m"
+        )
 
     # ─── 样式辅助 ───────────────────────────────────
 

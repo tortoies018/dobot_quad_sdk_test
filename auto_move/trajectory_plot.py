@@ -35,6 +35,9 @@ COLOR_IMU_Y = np.array([0.2, 0.75, 0.2, 1.0], dtype=np.float32)
 COLOR_IMU_Z = np.array([0.2, 0.5, 0.9, 1.0], dtype=np.float32)
 COLOR_IDEAL = np.array([0.95, 0.55, 0.05, 1.0], dtype=np.float32)  # 理想轨迹（橙）
 COLOR_TARGET = (1.0, 0.65, 0.05, 1.0)
+COLOR_COMMAND = np.array([0.78, 0.05, 0.95, 1.0], dtype=np.float32)
+COLOR_COMMAND_HEADING = np.array([0.0, 0.72, 1.0, 1.0], dtype=np.float32)
+COLOR_COMMAND_ARC = np.array([1.0, 0.85, 0.05, 1.0], dtype=np.float32)
 
 
 def _repeat_color(color, n):
@@ -101,6 +104,20 @@ class TrajectoryPlot3D(gl.GLViewWidget):
         self.addItem(self._ideal_targets)
         self._ideal_arrows = gl.GLLinePlotItem(mode="lines", width=2, glOptions='translucent')
         self.addItem(self._ideal_arrows)
+
+        # 当前正在执行的指令：紫色剩余路径、蓝色当前朝向、黄色转向弧。
+        self._command_line = gl.GLLinePlotItem(
+            mode="line_strip", width=5, antialias=True, glOptions='translucent')
+        self.addItem(self._command_line)
+        self._command_arrow = gl.GLLinePlotItem(mode="lines", width=4, glOptions='translucent')
+        self.addItem(self._command_arrow)
+        self._command_headings = gl.GLLinePlotItem(mode="lines", width=3, glOptions='translucent')
+        self.addItem(self._command_headings)
+        self._command_arc = gl.GLLinePlotItem(
+            mode="line_strip", width=3, antialias=True, glOptions='translucent')
+        self.addItem(self._command_arc)
+        self._command_target = gl.GLScatterPlotItem(color=tuple(COLOR_COMMAND), size=14)
+        self.addItem(self._command_target)
 
         self._last_mouse_pos = None
         self._drag_button = None
@@ -230,6 +247,7 @@ class TrajectoryPlot3D(gl.GLViewWidget):
         self._points.clear()
         self._clear_pts.clear()
         self.set_ideal_path(None)
+        self.set_current_command(None)
         self._update()
         self._reset_camera()
 
@@ -273,6 +291,80 @@ class TrajectoryPlot3D(gl.GLViewWidget):
         self._ideal_arrows.setData(
             pos=arrows,
             color=_repeat_color(COLOR_IDEAL, len(arrows)),
+        )
+
+    def set_current_command(self, command):
+        """动态绘制当前转向/移动指令及当前位置到目标点的剩余路径。"""
+        empty = np.zeros((0, 3), dtype=np.float32)
+        if not command:
+            self._command_line.setData(pos=empty, color=_repeat_color(COLOR_COMMAND, 0))
+            self._command_arrow.setData(pos=empty, color=_repeat_color(COLOR_COMMAND, 0))
+            self._command_headings.setData(pos=empty, color=np.zeros((0, 4), dtype=np.float32))
+            self._command_arc.setData(pos=empty, color=_repeat_color(COLOR_COMMAND_ARC, 0))
+            self._command_target.setData(pos=empty)
+            return
+
+        current = np.array(command.get("current", [0.0, 0.0, 0.0]), dtype=np.float32)
+        target = np.array(command.get("target", current), dtype=np.float32)
+        if current.size < 3 or target.size < 3:
+            return
+        current, target = current[:3].copy(), target[:3].copy()
+        # 略微抬高指令图层，避免与网格/计划轨迹发生深度闪烁。
+        current[2] = target[2] = 0.035
+        segment = np.array([current, target], dtype=np.float32)
+        self._command_line.setData(
+            pos=segment,
+            color=_repeat_color(COLOR_COMMAND, len(segment)),
+        )
+        self._command_target.setData(pos=target.reshape(1, 3))
+
+        delta = target[:2] - current[:2]
+        remaining = float(np.linalg.norm(delta))
+        arrow_pts = empty
+        if remaining > 1e-6:
+            unit = delta / remaining
+            side = np.array([-unit[1], unit[0]], dtype=np.float32)
+            arrow_len = min(max(remaining * 0.18, 0.08), 0.28)
+            tip = current + (target - current) * 0.72
+            base = tip.copy()
+            base[:2] -= unit * arrow_len
+            wing_a, wing_b = base.copy(), base.copy()
+            wing_a[:2] += side * arrow_len * 0.6
+            wing_b[:2] -= side * arrow_len * 0.6
+            arrow_pts = np.array([tip, wing_a, tip, wing_b], dtype=np.float32)
+        self._command_arrow.setData(
+            pos=arrow_pts,
+            color=_repeat_color(COLOR_COMMAND, len(arrow_pts)),
+        )
+
+        current_yaw = float(command.get("current_yaw", 0.0))
+        target_yaw = float(command.get("target_yaw", current_yaw))
+        ray_len = min(max(remaining * 0.28, 0.22), 0.75)
+        current_rad, target_rad = math.radians(current_yaw), math.radians(target_yaw)
+        current_tip = current.copy()
+        target_tip = current.copy()
+        current_tip[:2] += ray_len * np.array([math.cos(current_rad), math.sin(current_rad)])
+        target_tip[:2] += ray_len * np.array([math.cos(target_rad), math.sin(target_rad)])
+        headings = np.array([current, current_tip, current, target_tip], dtype=np.float32)
+        heading_colors = np.array([
+            COLOR_COMMAND_HEADING, COLOR_COMMAND_HEADING,
+            COLOR_COMMAND, COLOR_COMMAND,
+        ], dtype=np.float32)
+        self._command_headings.setData(pos=headings, color=heading_colors)
+
+        arc = empty
+        turn = (target_yaw - current_yaw + 180.0) % 360.0 - 180.0
+        if command.get("phase") == "turn" and abs(turn) > 0.5:
+            radius = ray_len * 0.62
+            angles = np.radians(np.linspace(current_yaw, current_yaw + turn, 25))
+            arc = np.column_stack((
+                current[0] + radius * np.cos(angles),
+                current[1] + radius * np.sin(angles),
+                np.full_like(angles, current[2] + 0.01),
+            )).astype(np.float32)
+        self._command_arc.setData(
+            pos=arc,
+            color=_repeat_color(COLOR_COMMAND_ARC, len(arc)),
         )
 
     def _update(self):

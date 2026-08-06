@@ -22,6 +22,7 @@ class AutoMoveWorker(QThread):
     progress = Signal(int, int, str)
     pos_ready = Signal(float, float, float)  # 世界坐标位置 (x, y, z) m，用于 3D 轨迹绘制
     ideal_path = Signal(list)      # 理想轨迹点列表 [[x,y,z], ...]
+    command_preview = Signal(dict)  # 当前指令的实时位置、目标、航向和阶段
     imu_data = Signal(dict)        # 完整 IMU 数据（位置、欧拉角）
     log_msg = Signal(str)          # 日志
     connected = Signal(bool)       # 连接状态
@@ -40,6 +41,10 @@ class AutoMoveWorker(QThread):
         self._initial_rpy = None     # 初始姿态基准（3D 坐标显示用）
         self._initial_yaw = 0.0      # 初始偏航角（航向矫正基准）
         self._cmd_queue = queue.Queue()   # 移动指令队列
+        self._active_target = None
+        self._active_target_yaw = 0.0
+        self._active_phase = ""
+        self._active_segment = 0
 
         # 可配置参数（由 GUI 下发）
         self.mode = "back_and_forth"   # back_and_forth / forward_only / backward_only / square
@@ -235,6 +240,7 @@ class AutoMoveWorker(QThread):
             self._log("ERROR", f"执行出错: {e}")
             self.finished_ok.emit(f"出错: {e}")
         finally:
+            self._clear_command_preview()
             self._move_running = False   # 移动指令结束
 
     # ─── 移动 ─────────────────────────────────────
@@ -265,6 +271,41 @@ class AutoMoveWorker(QThread):
         state = self._robot.get_state()
         rpy = state.robot_state.ori_body  # [roll, pitch, yaw] 弧度
         return math.degrees(rpy[2])
+
+    def _set_active_command(self, target, target_yaw, phase, segment):
+        """设置当前指令，并立即发布一次；采样线程随后持续刷新当前位置。"""
+        self._active_target = tuple(float(v) for v in target[:3])
+        self._active_target_yaw = float(target_yaw)
+        self._active_phase = phase
+        self._active_segment = int(segment)
+        self._publish_command_preview()
+
+    def _publish_command_preview(self, current=None, current_yaw=None):
+        target = self._active_target
+        if target is None:
+            return
+        try:
+            current = self._read_pos() if current is None else current
+            current_yaw = self._get_yaw() if current_yaw is None else current_yaw
+            dx = target[0] - float(current[0])
+            dy = target[1] - float(current[1])
+            self.command_preview.emit({
+                "current": [float(current[0]), float(current[1]), 0.0],
+                "target": [target[0], target[1], 0.0],
+                "current_yaw": float(current_yaw),
+                "target_yaw": self._active_target_yaw,
+                "phase": self._active_phase,
+                "segment": self._active_segment,
+                "remaining": math.hypot(dx, dy),
+                "turn": self._normalize_angle(self._active_target_yaw - float(current_yaw)),
+            })
+        except Exception:
+            pass
+
+    def _clear_command_preview(self):
+        self._active_target = None
+        self._active_phase = ""
+        self.command_preview.emit({})
 
     def _correct_heading_once(self):
         """移动完一段完整距离后，按当前偏航误差做一次转向矫正
@@ -328,6 +369,7 @@ class AutoMoveWorker(QThread):
                 continue
 
             target_yaw = math.degrees(math.atan2(dy, dx))
+            self._set_active_command(target, target_yaw, "turn", i + 1)
             self._log(
                 "INFO",
                 f"目标点 {i + 1}: ({target[0]:.3f}, {target[1]:.3f})，"
@@ -345,13 +387,17 @@ class AutoMoveWorker(QThread):
                 float(target[1]) - float(current[1]),
             )
             if remaining > self.position_threshold:
+                self._set_active_command(target, target_yaw, "move", i + 1)
                 self._log("INFO", f"移动到目标点 {i + 1}: 剩余距离 {remaining:.3f}m")
                 self._move("forward", remaining)
 
         # 回到起点后恢复初始朝向，下一循环仍追踪同一组世界坐标顶点。
         if self._running and self._move_running:
             self.progress.emit(cycle, total, "正方形完成，转回初始方向")
+            current = self._read_pos()
+            self._set_active_command(current, self._initial_yaw, "turn", 0)
             self._correct_heading_once()
+            self._clear_command_preview()
 
     def _read_pos(self):
         """读取当前世界坐标 [x, y, z]（m）；pos_body 为空则回退 vel_body 积分估算"""
@@ -460,6 +506,11 @@ class AutoMoveWorker(QThread):
                     imu["rpy_abs"] = [0.0, 0.0, 0.0]
 
                 self.imu_data.emit(imu)
+                if self._active_target is not None:
+                    self._publish_command_preview(
+                        current=imu["pos"],
+                        current_yaw=math.degrees(imu["rpy_abs"][2]),
+                    )
             except Exception:
                 pass
             time.sleep(0.1)  # 10Hz
