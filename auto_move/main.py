@@ -74,6 +74,14 @@ class MainWindow(QMainWindow):
         self.mode_combo.currentIndexChanged.connect(self._on_mode_changed)
         form.addRow("运动模式:", self.mode_combo)
 
+        self.control_api_combo = QComboBox()
+        self.control_api_combo.addItem("line_walk + rotation", "line_walk")
+        self.control_api_combo.addItem("velocity_sequence", "velocity_sequence")
+        self.control_api_combo.setStyleSheet(self._input_style())
+        self.control_api_combo.setToolTip("选择 Dobot Quad SDK 实际使用的运动控制 API")
+        self.control_api_combo.currentIndexChanged.connect(self._on_control_api_changed)
+        form.addRow("控制 API:", self.control_api_combo)
+
         self.dist_spin = QDoubleSpinBox()
         self.dist_spin.setRange(0.1, 10.0)  # 距离上限 10 m
         self.dist_spin.setDecimals(1)
@@ -115,6 +123,28 @@ class MainWindow(QMainWindow):
         self.speed_spin.setValue(50)
         self.speed_spin.setStyleSheet(self._input_style())
         form.addRow("速度比:", self.speed_spin)
+
+        self.linear_velocity_spin = QDoubleSpinBox()
+        self.linear_velocity_spin.setRange(0.1, 1.5)
+        self.linear_velocity_spin.setDecimals(2)
+        self.linear_velocity_spin.setSingleStep(0.1)
+        self.linear_velocity_spin.setValue(0.3)
+        self.linear_velocity_spin.setSuffix(" m/s")
+        self.linear_velocity_spin.setEnabled(False)
+        self.linear_velocity_spin.setStyleSheet(self._input_style())
+        self.linear_velocity_spin.setToolTip("velocity_sequence 的 vx 绝对值")
+        form.addRow("线速度 vx:", self.linear_velocity_spin)
+
+        self.yaw_velocity_spin = QDoubleSpinBox()
+        self.yaw_velocity_spin.setRange(0.1, 1.5)
+        self.yaw_velocity_spin.setDecimals(2)
+        self.yaw_velocity_spin.setSingleStep(0.1)
+        self.yaw_velocity_spin.setValue(0.3)
+        self.yaw_velocity_spin.setSuffix(" rad/s")
+        self.yaw_velocity_spin.setEnabled(False)
+        self.yaw_velocity_spin.setStyleSheet(self._input_style())
+        self.yaw_velocity_spin.setToolTip("velocity_sequence 的 vyaw 绝对值")
+        form.addRow("角速度 vyaw:", self.yaw_velocity_spin)
 
         # 速度实时调节滑块
         speed_row = QHBoxLayout()
@@ -207,12 +237,15 @@ class MainWindow(QMainWindow):
         v4 = QVBoxLayout(grp4)
         self.traj_plot = TrajectoryPlot3D()
         v4.addWidget(self.traj_plot, 1)
-        btn_clear_traj = QPushButton("清空轨迹")
-        btn_clear_traj.setStyleSheet("QPushButton { background:#e65100; color:#fff; padding:6px 12px; "
+        traj_button_row = QHBoxLayout()
+        traj_button_row.addStretch()
+        btn_clear_traj = QPushButton("清除已有轨迹")
+        btn_clear_traj.setStyleSheet("QPushButton { background:#e65100; color:#fff; padding:6px 18px; "
                                      "border:1px solid #6d6d6d; border-radius:4px; }"
                                      "QPushButton:hover { background:#f57c00; }")
-        btn_clear_traj.clicked.connect(self.traj_plot.clear)
-        v4.addWidget(btn_clear_traj)
+        btn_clear_traj.clicked.connect(self._clear_trajectory)
+        traj_button_row.addWidget(btn_clear_traj)
+        v4.addLayout(traj_button_row)
         hint = QLabel("左/中键平移 | 右键旋转 | 滚轮缩放 | WASDQE飞行（Shift加速）| R重置")
         hint.setStyleSheet("color:#888; font:11px;")
         hint.setAlignment(Qt.AlignCenter)
@@ -237,7 +270,17 @@ class MainWindow(QMainWindow):
         log_panel = QWidget()
         log_layout = QVBoxLayout(log_panel)
         log_layout.setContentsMargins(0, 0, 0, 0)
-        log_layout.addWidget(QLabel("日志", styleSheet="color:#4fc3f7; font:bold 14px;"))
+        log_header = QHBoxLayout()
+        log_header.addWidget(QLabel("日志", styleSheet="color:#4fc3f7; font:bold 14px;"))
+        log_header.addStretch()
+        btn_clear_log = QPushButton("清除日志")
+        btn_clear_log.setStyleSheet(
+            "QPushButton { background:#455a64; color:#fff; padding:4px 14px; "
+            "border:1px solid #607d8b; border-radius:4px; }"
+            "QPushButton:hover { background:#546e7a; }")
+        btn_clear_log.clicked.connect(self._clear_log)
+        log_header.addWidget(btn_clear_log)
+        log_layout.addLayout(log_header)
         self._log = QTextEdit()
         self._log.setReadOnly(True)
         self._log.setMinimumHeight(80)
@@ -374,11 +417,14 @@ class MainWindow(QMainWindow):
         mode_idx = self.mode_combo.currentIndex()
         params = {
             "mode": ["back_and_forth", "forward_only", "backward_only", "square"][mode_idx],
+            "control_api": self.control_api_combo.currentData(),
             "distance": self.dist_spin.value(),
             "side_len": self.side_spin.value(),
             "repetitions": self.rep_spin.value(),
             "infinite": self.infinite_check.isChecked(),
             "speed_ratio": self.speed_spin.value(),
+            "linear_velocity": self.linear_velocity_spin.value(),
+            "yaw_velocity": self.yaw_velocity_spin.value(),
             "settle_time": self.settle_spin.value(),
         }
         self._worker.start_move(params)
@@ -388,15 +434,25 @@ class MainWindow(QMainWindow):
         self.btn_stop.setEnabled(True)
         self.progress_bar.setValue(0)
         self.lbl_stage.setText("连接中...")
-        self.traj_plot.clear()   # 每次启动清空轨迹
+        # 新指令只标记一个新起点，历史实测轨迹由用户手动清除。
+        self.traj_plot.mark_start()
         self._log_msg("─" * 40)
         loop_txt = "无限" if self.infinite_check.isChecked() else f"{self.rep_spin.value()}次"
+        api_text = self.control_api_combo.currentText()
         if self.mode_combo.currentText() == "正方形":
             self._log_msg(f"[{self._ts()}] [INFO] 启动: 地址={addr} 模式=正方形 "
-                          f"边长={self.side_spin.value()}m 循环={loop_txt} 速度={self.speed_spin.value()}")
+                          f"边长={self.side_spin.value()}m 循环={loop_txt} "
+                          f"API={api_text} 速度比={self.speed_spin.value()}")
         else:
             self._log_msg(f"[{self._ts()}] [INFO] 启动: 地址={addr} 模式={self.mode_combo.currentText()} "
-                          f"距离={self.dist_spin.value()}m 循环={loop_txt} 速度={self.speed_spin.value()}")
+                          f"距离={self.dist_spin.value()}m 循环={loop_txt} "
+                          f"API={api_text} 速度比={self.speed_spin.value()}")
+        if self.control_api_combo.currentData() == "velocity_sequence":
+            self._log_msg(
+                f"[{self._ts()}] [INFO] velocity_sequence 参数: "
+                f"vx={self.linear_velocity_spin.value():.2f}m/s "
+                f"vyaw={self.yaw_velocity_spin.value():.2f}rad/s"
+            )
         self._log_msg(f"[{self._ts()}] [INFO] 指令已下发（轨迹/IMU 采样持续运行）")
 
     def _on_speed_slider(self, val):
@@ -412,6 +468,21 @@ class MainWindow(QMainWindow):
         is_square = self.mode_combo.itemText(idx) == "正方形"
         self.side_spin.setEnabled(is_square)
         self.dist_spin.setEnabled(not is_square)
+
+    def _on_control_api_changed(self, _idx):
+        """仅在速度序列控制下开放 vx/vyaw 参数。"""
+        is_velocity = self.control_api_combo.currentData() == "velocity_sequence"
+        self.linear_velocity_spin.setEnabled(is_velocity)
+        self.yaw_velocity_spin.setEnabled(is_velocity)
+
+    def _clear_trajectory(self):
+        """仅由用户操作清除历史轨迹和预览图层。"""
+        self.traj_plot.clear()
+        self._log_msg(f"[{self._ts()}] [INFO] 用户已清除全部轨迹")
+
+    def _clear_log(self):
+        self._log.clear()
+        self._sb.showMessage("日志已清除", 2000)
 
     def _stop(self):
         """请求停止当前移动指令（轨迹/IMU 采样继续）"""

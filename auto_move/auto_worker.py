@@ -48,11 +48,14 @@ class AutoMoveWorker(QThread):
 
         # 可配置参数（由 GUI 下发）
         self.mode = "back_and_forth"   # back_and_forth / forward_only / backward_only / square
+        self.control_api = "line_walk"  # line_walk / velocity_sequence
         self.distance = 1.0            # 直线单次移动距离 (m)
         self.side_len = 1.0            # 正方形边长 (m)
         self.repetitions = 3           # 循环次数
         self.infinite = False          # 是否无限循环（直到手动停止）
         self.speed_ratio = 50          # 速度比 [10,100]（运行中可实时修改）
+        self.linear_velocity = 0.3     # velocity_sequence: |vx| (m/s)
+        self.yaw_velocity = 0.3        # velocity_sequence: |vyaw| (rad/s)
         self.settle_time = 0.5         # 移动/转向后姿态稳定等待时间 (秒)
         self.yaw_threshold = 3.0       # 航向矫正阈值 (度)
         self.position_threshold = 0.02  # 到达目标点判定阈值 (m)
@@ -136,11 +139,14 @@ class AutoMoveWorker(QThread):
     def _execute_move(self, cmd):
         """执行一条移动指令（采样线程不中断）"""
         self.mode = cmd.get("mode", "back_and_forth")
+        self.control_api = cmd.get("control_api", "line_walk")
         self.distance = cmd.get("distance", 1.0)
         self.side_len = cmd.get("side_len", 1.0)
         self.repetitions = cmd.get("repetitions", 3)
         self.infinite = cmd.get("infinite", False)
         self.speed_ratio = cmd.get("speed_ratio", 50)
+        self.linear_velocity = max(0.1, float(cmd.get("linear_velocity", 0.3)))
+        self.yaw_velocity = max(0.1, float(cmd.get("yaw_velocity", 0.3)))
         self.settle_time = cmd.get("settle_time", 0.5)
 
         try:
@@ -148,6 +154,20 @@ class AutoMoveWorker(QThread):
             self._log("API", f"set_speed_ratio(ratio={self.speed_ratio})")
         except Exception as e:
             self._log("ERROR", f"设置速度比失败: {e}")
+
+        if self.control_api == "velocity_sequence":
+            try:
+                if self._is_wheel:
+                    self._log("API", "wheel_loco(show_progress=False)")
+                    self._robot.wheel_loco(show_progress=False)
+                else:
+                    self._log("API", "balance_stand(show_progress=False)")
+                    self._robot.balance_stand(show_progress=False)
+            except Exception as e:
+                self._log("ERROR", f"velocity_sequence 准备运动状态失败: {e}")
+                self.finished_ok.emit(f"出错: {e}")
+                self._move_running = False
+                return
 
         # 记录本次移动的姿态/偏航基准（3D 显示与航向矫正用）
         try:
@@ -246,25 +266,63 @@ class AutoMoveWorker(QThread):
     # ─── 移动 ─────────────────────────────────────
 
     def _move(self, direction, distance):
-        """执行一次移动——使用通用移动 API（line_walk 系），不改变机器人状态"""
+        """按当前选择使用 line_walk 或 velocity_sequence 执行直线移动。"""
         try:
-            # SDK 单条直线移动指令上限为 3m；较长距离拆成连续指令。
-            remaining = max(0.0, float(distance))
-            while remaining > 1e-6 and self._running and self._move_running:
-                chunk = min(remaining, 3.0)
-                if direction == "forward":
-                    self._log("API", f"walk_forward(distance={chunk:.2f}m, speed_ratio={self.speed_ratio})")
-                    self._robot.walk_forward(chunk, self.speed_ratio, show_progress=False)
-                else:
-                    self._log("API", f"walk_backward(distance={chunk:.2f}m, speed_ratio={self.speed_ratio})")
-                    self._robot.walk_backward(chunk, self.speed_ratio, show_progress=False)
-                remaining -= chunk
-                self._emit_pos()
+            if self.control_api == "velocity_sequence":
+                self._move_by_velocity(direction, distance)
+            else:
+                # SDK 单条 line_walk 距离上限为 3m；较长距离拆成连续指令。
+                remaining = max(0.0, float(distance))
+                while remaining > 1e-6 and self._running and self._move_running:
+                    chunk = min(remaining, 3.0)
+                    if direction == "forward":
+                        self._log("API", f"walk_forward(distance={chunk:.2f}m, speed_ratio={self.speed_ratio})")
+                        self._robot.walk_forward(chunk, self.speed_ratio, show_progress=False)
+                    else:
+                        self._log("API", f"walk_backward(distance={chunk:.2f}m, speed_ratio={self.speed_ratio})")
+                        self._robot.walk_backward(chunk, self.speed_ratio, show_progress=False)
+                    remaining -= chunk
+                    self._emit_pos()
         except Exception as e:
             self._log("ERROR", f"移动失败({direction}): {e}")
             raise
         time.sleep(self.settle_time)  # 等待姿态稳定
         self._emit_pos()              # 移动后记录轨迹点
+
+    def _move_by_velocity(self, direction, distance):
+        """用 SDK velocity_sequence 的 vx×duration 实现目标移动距离。"""
+        distance = max(0.0, float(distance))
+        if distance <= 1e-6 or not (self._running and self._move_running):
+            return
+        vx = self.linear_velocity if direction == "forward" else -self.linear_velocity
+        duration = distance / self.linear_velocity
+        steps = self._velocity_steps(vx=vx, vyaw=0.0, duration=duration)
+        gait = "wheel_loco" if self._is_wheel else "walk"
+        self._log(
+            "API",
+            f"velocity_sequence(vel_seq=[vx={vx:.2f}, vy=0, vyaw=0, "
+            f"duration={duration:.3f}s; stop], gait='{gait}', "
+            f"speed_ratio={self.speed_ratio}, stand_down_after=False)",
+        )
+        self._robot.velocity_sequence(
+            steps,
+            gait=gait,
+            speed_ratio=self.speed_ratio,
+            stand_down_after=False,
+            show_progress=False,
+        )
+
+    @staticmethod
+    def _velocity_steps(vx, vyaw, duration):
+        """生成最长 3 秒一段并以零速度结尾的速度序列。"""
+        steps = []
+        remaining = max(0.0, float(duration))
+        while remaining > 1e-6:
+            chunk = min(remaining, 3.0)
+            steps.append((float(vx), 0.0, float(vyaw), chunk))
+            remaining -= chunk
+        steps.append((0.0, 0.0, 0.0, 0.3))
+        return steps
 
     def _get_yaw(self):
         """从 IMU 融合位姿中读取偏航角（度）"""
@@ -336,7 +394,26 @@ class AutoMoveWorker(QThread):
             f"{context}: 当前 {current_yaw:.2f}°，目标 {target_yaw:.2f}°，"
             f"{direction} {abs(turn):.2f}°",
         )
-        if turn > 0:
+        if self.control_api == "velocity_sequence":
+            # SDK 速度序列采用标准角速度符号：+vyaw 左转，-vyaw 右转。
+            vyaw = self.yaw_velocity if turn > 0 else -self.yaw_velocity
+            duration = math.radians(abs(turn)) / self.yaw_velocity
+            steps = self._velocity_steps(vx=0.0, vyaw=vyaw, duration=duration)
+            gait = "wheel_loco" if self._is_wheel else "walk"
+            self._log(
+                "API",
+                f"velocity_sequence(vel_seq=[vx=0, vy=0, vyaw={vyaw:.2f}, "
+                f"duration={duration:.3f}s; stop], gait='{gait}', "
+                f"speed_ratio={self.speed_ratio}, stand_down_after=False)",
+            )
+            self._robot.velocity_sequence(
+                steps,
+                gait=gait,
+                speed_ratio=self.speed_ratio,
+                stand_down_after=False,
+                show_progress=False,
+            )
+        elif turn > 0:
             self._log("API", f"rotate_left(angle={abs(turn):.2f}°)")
             self._robot.rotate_left(abs(turn), show_progress=False)
         else:
