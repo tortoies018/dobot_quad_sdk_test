@@ -5,10 +5,15 @@
 移动指令通过命令队列逐条下发。
 """
 
+import csv
 import math
+import os
 import queue
+import statistics
 import threading
 import time
+from datetime import datetime
+from pathlib import Path
 
 from PySide6.QtCore import QThread, Signal
 
@@ -45,6 +50,12 @@ class AutoMoveWorker(QThread):
         self._active_target_yaw = 0.0
         self._active_phase = ""
         self._active_segment = 0
+        self._measurement_lock = threading.Lock()
+        self._measurement_active = False
+        self._measurement_yaws = []
+        self.precision_groups = 100
+        self.last_result_path = None
+        self.result_dir = Path(__file__).resolve().parent / "results"
 
         # 可配置参数（由 GUI 下发）
         self.mode = "back_and_forth"   # back_and_forth / forward_only / backward_only / square
@@ -169,6 +180,10 @@ class AutoMoveWorker(QThread):
                 self._move_running = False
                 return
 
+        if self.mode == "precision_test":
+            self._execute_precision_suite()
+            return
+
         # 记录本次移动的姿态/偏航基准（3D 显示与航向矫正用）
         try:
             state = self._robot.get_state()
@@ -263,6 +278,351 @@ class AutoMoveWorker(QThread):
             self._clear_command_preview()
             self._move_running = False   # 移动指令结束
 
+    # ─── SDK 指令精度自动测试 ─────────────────────
+
+    @staticmethod
+    def _precision_case_pairs():
+        """按相反方向配对，保证每组测试后尽量回到开始位置/朝向。"""
+        pairs = []
+        for distance in (1.0, 2.0, 3.0):
+            pairs.append((
+                "前后移动",
+                (("forward", "前进", distance, "m"), ("backward", "后退", distance, "m")),
+            ))
+        for distance in (1.0, 2.0, 3.0):
+            pairs.append((
+                "左右平移",
+                (("left", "左平移", distance, "m"), ("right", "右平移", distance, "m")),
+            ))
+        for angle in (90.0, 180.0, 360.0):
+            pairs.append((
+                "左右旋转",
+                (("left", "左旋转", angle, "deg"), ("right", "右旋转", angle, "deg")),
+            ))
+        return pairs
+
+    @staticmethod
+    def _precision_fields():
+        return [
+            "run_id", "timestamp", "result_index", "speed_ratio", "control_api",
+            "pair_type", "direction", "target_value", "target_unit", "group_index",
+            "status", "error", "duration_s", "imu_sample_count",
+            "start_x_m", "start_y_m", "start_z_m", "start_yaw_deg",
+            "end_x_m", "end_y_m", "end_z_m", "end_yaw_deg",
+            "delta_x_m", "delta_y_m", "delta_z_m",
+            "expected_distance_m", "actual_distance_m", "distance_error_m",
+            "abs_distance_error_m", "lateral_error_m", "vertical_error_m",
+            "yaw_drift_deg", "expected_angle_deg", "actual_angle_deg",
+            "angle_error_deg", "abs_angle_error_deg", "position_drift_m",
+        ]
+
+    def _execute_precision_suite(self):
+        """自动执行规范中的全部测试，并在每条指令后立即持久化 IMU 误差。"""
+        run_id = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+        result_dir = Path(self.result_dir)
+        result_dir.mkdir(parents=True, exist_ok=True)
+        result_path = result_dir / f"sdk_precision_{run_id}.csv"
+        summary_path = result_dir / f"sdk_precision_{run_id}_summary.csv"
+        self.last_result_path = str(result_path)
+
+        cases = self._precision_case_pairs()
+        total = 2 * len(cases) * self.precision_groups * 2
+        completed = 0
+        records = []
+        failure = None
+        self._log(
+            "INFO",
+            f"SDK 指令精度测试开始: 每个单项 {self.precision_groups} 组，"
+            f"共 {total} 条结果，文件 {result_path}",
+        )
+
+        try:
+            with result_path.open("w", newline="", encoding="utf-8-sig") as file_obj:
+                writer = csv.DictWriter(file_obj, fieldnames=self._precision_fields())
+                writer.writeheader()
+                file_obj.flush()
+
+                for speed_ratio in (100, 50):
+                    if not (self._running and self._move_running):
+                        break
+                    self.speed_ratio = speed_ratio
+                    self._robot.set_speed_ratio(speed_ratio)
+                    self._log("API", f"set_speed_ratio(ratio={speed_ratio})")
+
+                    for pair_type, commands in cases:
+                        if not (self._running and self._move_running):
+                            break
+                        for group_index in range(1, self.precision_groups + 1):
+                            if not (self._running and self._move_running):
+                                break
+                            for direction, direction_label, target, unit in commands:
+                                if not (self._running and self._move_running):
+                                    break
+                                result_index = completed + 1
+                                stage = (
+                                    f"精度测试 {speed_ratio}% {direction_label}{target:g}{unit} "
+                                    f"第{group_index}/{self.precision_groups}组"
+                                )
+                                self.progress.emit(result_index, total, stage)
+                                row, command_error = self._measure_precision_command(
+                                    run_id=run_id,
+                                    result_index=result_index,
+                                    speed_ratio=speed_ratio,
+                                    pair_type=pair_type,
+                                    direction=direction,
+                                    direction_label=direction_label,
+                                    target=target,
+                                    unit=unit,
+                                    group_index=group_index,
+                                )
+                                writer.writerow(row)
+                                file_obj.flush()
+                                os.fsync(file_obj.fileno())
+                                records.append(row)
+                                completed += 1
+                                self._log_precision_result(row, completed, total)
+                                if command_error is not None:
+                                    failure = command_error
+                                    raise command_error
+        except Exception as exc:
+            failure = failure or exc
+            self._log("ERROR", f"精度测试中止: {exc}")
+        finally:
+            try:
+                self._write_precision_summary(records, summary_path)
+            except Exception as exc:
+                self._log("ERROR", f"写入汇总文件失败: {exc}")
+            self._clear_command_preview()
+            self._move_running = False
+
+        if failure is not None:
+            self.finished_ok.emit(
+                f"出错: 已记录 {completed}/{total} 条，结果 {result_path}，原因: {failure}"
+            )
+        elif completed < total:
+            self.finished_ok.emit(
+                f"已手动停止，已记录 {completed}/{total} 条，结果 {result_path}"
+            )
+        else:
+            self.finished_ok.emit(
+                f"完成精度测试，共 {completed} 条，结果 {result_path}，汇总 {summary_path}"
+            )
+
+    def _measure_precision_command(
+        self,
+        run_id,
+        result_index,
+        speed_ratio,
+        pair_type,
+        direction,
+        direction_label,
+        target,
+        unit,
+        group_index,
+    ):
+        """执行一条测试指令，返回可立即写入 CSV 的结果和可能的异常。"""
+        started = time.monotonic()
+        try:
+            before = self._read_imu_pose()
+        except Exception as exc:
+            before = {"x": 0.0, "y": 0.0, "z": 0.0, "yaw_rad": 0.0}
+            row = self._calculate_precision_result(
+                before, before, [0.0], pair_type, direction, float(target))
+            row.update({
+                "run_id": run_id,
+                "timestamp": datetime.now().isoformat(timespec="milliseconds"),
+                "result_index": result_index,
+                "speed_ratio": speed_ratio,
+                "control_api": self.control_api,
+                "pair_type": pair_type,
+                "direction": direction_label,
+                "target_value": target,
+                "target_unit": unit,
+                "group_index": group_index,
+                "status": "error",
+                "error": f"读取指令前 IMU 失败: {exc}",
+                "duration_s": round(time.monotonic() - started, 6),
+                "imu_sample_count": 0,
+            })
+            return row, exc
+
+        with self._measurement_lock:
+            self._measurement_yaws = [before["yaw_rad"]]
+            self._measurement_active = True
+
+        command_error = None
+        try:
+            if pair_type == "前后移动":
+                self._move(direction, target)
+            elif pair_type == "左右平移":
+                self._move_lateral(direction, target)
+            else:
+                self._rotate_relative(direction, target)
+        except Exception as exc:
+            command_error = exc
+        finally:
+            try:
+                after = self._read_imu_pose()
+            except Exception as exc:
+                after = before.copy()
+                command_error = command_error or exc
+            with self._measurement_lock:
+                self._measurement_yaws.append(after["yaw_rad"])
+                yaw_samples = self._measurement_yaws.copy()
+                self._measurement_active = False
+
+        row = self._calculate_precision_result(
+            before=before,
+            after=after,
+            yaw_samples=yaw_samples,
+            pair_type=pair_type,
+            direction=direction,
+            target=float(target),
+        )
+        row.update({
+            "run_id": run_id,
+            "timestamp": datetime.now().isoformat(timespec="milliseconds"),
+            "result_index": result_index,
+            "speed_ratio": speed_ratio,
+            "control_api": self.control_api,
+            "pair_type": pair_type,
+            "direction": direction_label,
+            "target_value": target,
+            "target_unit": unit,
+            "group_index": group_index,
+            "status": ("error" if command_error else
+                       "stopped" if not self._move_running else "success"),
+            "error": str(command_error) if command_error else "",
+            "duration_s": round(time.monotonic() - started, 6),
+            "imu_sample_count": len(yaw_samples),
+        })
+        return row, command_error
+
+    def _read_imu_pose(self):
+        state = self._robot.get_state()
+        rs = state.robot_state
+        pos = rs.pos_body
+        if len(pos) >= 2:
+            xyz = [float(pos[0]), float(pos[1]), float(pos[2]) if len(pos) >= 3 else 0.0]
+        else:
+            xyz = self._read_pos()
+        ori = rs.ori_body
+        yaw = float(ori[2]) if len(ori) >= 3 else 0.0
+        return {"x": xyz[0], "y": xyz[1], "z": xyz[2], "yaw_rad": yaw}
+
+    @classmethod
+    def _calculate_precision_result(cls, before, after, yaw_samples, pair_type, direction, target):
+        dx = after["x"] - before["x"]
+        dy = after["y"] - before["y"]
+        dz = after["z"] - before["z"]
+        start_yaw = before["yaw_rad"]
+        end_yaw = after["yaw_rad"]
+        yaw_change = 0.0
+        for previous, current in zip(yaw_samples[:-1], yaw_samples[1:]):
+            yaw_change += cls._normalize_rad(current - previous)
+        yaw_change_deg = math.degrees(yaw_change)
+
+        result = {
+            "start_x_m": round(before["x"], 6),
+            "start_y_m": round(before["y"], 6),
+            "start_z_m": round(before["z"], 6),
+            "start_yaw_deg": round(math.degrees(start_yaw), 6),
+            "end_x_m": round(after["x"], 6),
+            "end_y_m": round(after["y"], 6),
+            "end_z_m": round(after["z"], 6),
+            "end_yaw_deg": round(math.degrees(end_yaw), 6),
+            "delta_x_m": round(dx, 6),
+            "delta_y_m": round(dy, 6),
+            "delta_z_m": round(dz, 6),
+            "expected_distance_m": "", "actual_distance_m": "", "distance_error_m": "",
+            "abs_distance_error_m": "", "lateral_error_m": "", "vertical_error_m": "",
+            "yaw_drift_deg": "", "expected_angle_deg": "", "actual_angle_deg": "",
+            "angle_error_deg": "", "abs_angle_error_deg": "",
+            "position_drift_m": round(math.hypot(dx, dy), 6),
+        }
+
+        if pair_type in ("前后移动", "左右平移"):
+            forward = (math.cos(start_yaw), math.sin(start_yaw))
+            left = (-math.sin(start_yaw), math.cos(start_yaw))
+            desired = {
+                "forward": forward,
+                "backward": (-forward[0], -forward[1]),
+                "left": left,
+                "right": (-left[0], -left[1]),
+            }[direction]
+            actual = dx * desired[0] + dy * desired[1]
+            lateral = dx * (-desired[1]) + dy * desired[0]
+            error = actual - target
+            result.update({
+                "expected_distance_m": round(target, 6),
+                "actual_distance_m": round(actual, 6),
+                "distance_error_m": round(error, 6),
+                "abs_distance_error_m": round(abs(error), 6),
+                "lateral_error_m": round(lateral, 6),
+                "vertical_error_m": round(dz, 6),
+                "yaw_drift_deg": round(cls._normalize_angle(math.degrees(end_yaw - start_yaw)), 6),
+            })
+        else:
+            direction_sign = 1.0 if direction == "left" else -1.0
+            actual = direction_sign * yaw_change_deg
+            error = actual - target
+            result.update({
+                "expected_angle_deg": round(target, 6),
+                "actual_angle_deg": round(actual, 6),
+                "angle_error_deg": round(error, 6),
+                "abs_angle_error_deg": round(abs(error), 6),
+            })
+        return result
+
+    def _log_precision_result(self, row, completed, total):
+        if row["pair_type"] == "左右旋转":
+            detail = (
+                f"目标={row['expected_angle_deg']}° 实际={row['actual_angle_deg']}° "
+                f"误差={row['angle_error_deg']}° 位移漂移={row['position_drift_m']}m"
+            )
+        else:
+            detail = (
+                f"目标={row['expected_distance_m']}m 实际={row['actual_distance_m']}m "
+                f"误差={row['distance_error_m']}m 侧向={row['lateral_error_m']}m "
+                f"航向漂移={row['yaw_drift_deg']}°"
+            )
+        self._log(
+            "RESULT",
+            f"[{completed}/{total}] {row['speed_ratio']}% {row['direction']} "
+            f"第{row['group_index']}组 {detail} 状态={row['status']}",
+        )
+
+    @staticmethod
+    def _write_precision_summary(records, summary_path):
+        grouped = {}
+        for row in records:
+            key = (
+                row["speed_ratio"], row["control_api"], row["pair_type"],
+                row["direction"], row["target_value"], row["target_unit"],
+            )
+            grouped.setdefault(key, []).append(row)
+        fields = [
+            "speed_ratio", "control_api", "pair_type", "direction", "target_value",
+            "target_unit", "record_count", "success_count", "error_count", "error_metric",
+            "mean_error", "mean_abs_error", "std_error", "max_abs_error",
+        ]
+        with summary_path.open("w", newline="", encoding="utf-8-sig") as file_obj:
+            writer = csv.DictWriter(file_obj, fieldnames=fields)
+            writer.writeheader()
+            for key, rows in grouped.items():
+                metric = "angle_error_deg" if key[2] == "左右旋转" else "distance_error_m"
+                values = [float(row[metric]) for row in rows if row["status"] == "success"]
+                writer.writerow({
+                    "speed_ratio": key[0], "control_api": key[1], "pair_type": key[2],
+                    "direction": key[3], "target_value": key[4], "target_unit": key[5],
+                    "record_count": len(rows), "success_count": len(values),
+                    "error_count": len(rows) - len(values), "error_metric": metric,
+                    "mean_error": round(statistics.mean(values), 6) if values else "",
+                    "mean_abs_error": round(statistics.mean(abs(v) for v in values), 6) if values else "",
+                    "std_error": round(statistics.pstdev(values), 6) if values else "",
+                    "max_abs_error": round(max(abs(v) for v in values), 6) if values else "",
+                })
+
     # ─── 移动 ─────────────────────────────────────
 
     def _move(self, direction, distance):
@@ -296,7 +656,7 @@ class AutoMoveWorker(QThread):
             return
         vx = self.linear_velocity if direction == "forward" else -self.linear_velocity
         duration = distance / self.linear_velocity
-        steps = self._velocity_steps(vx=vx, vyaw=0.0, duration=duration)
+        steps = self._velocity_steps(vx=vx, vy=0.0, vyaw=0.0, duration=duration)
         gait = "wheel_loco" if self._is_wheel else "walk"
         self._log(
             "API",
@@ -312,14 +672,87 @@ class AutoMoveWorker(QThread):
             show_progress=False,
         )
 
+    def _move_lateral(self, direction, distance):
+        """执行左/右平移精度测试，支持 line_walk 和 velocity_sequence。"""
+        try:
+            if self.control_api == "velocity_sequence":
+                distance = max(0.0, float(distance))
+                vy = self.linear_velocity if direction == "left" else -self.linear_velocity
+                duration = distance / self.linear_velocity
+                steps = self._velocity_steps(vx=0.0, vy=vy, vyaw=0.0, duration=duration)
+                gait = "wheel_loco" if self._is_wheel else "walk"
+                self._log(
+                    "API",
+                    f"velocity_sequence(vel_seq=[vx=0, vy={vy:.2f}, vyaw=0, "
+                    f"duration={duration:.3f}s; stop], gait='{gait}', "
+                    f"speed_ratio={self.speed_ratio}, stand_down_after=False)",
+                )
+                self._robot.velocity_sequence(
+                    steps,
+                    gait=gait,
+                    speed_ratio=self.speed_ratio,
+                    stand_down_after=False,
+                    show_progress=False,
+                )
+            else:
+                remaining = max(0.0, float(distance))
+                while remaining > 1e-6 and self._running and self._move_running:
+                    chunk = min(remaining, 3.0)
+                    if direction == "left":
+                        self._log("API", f"move_left(distance={chunk:.2f}m, speed_ratio={self.speed_ratio})")
+                        self._robot.move_left(chunk, self.speed_ratio, show_progress=False)
+                    else:
+                        self._log("API", f"move_right(distance={chunk:.2f}m, speed_ratio={self.speed_ratio})")
+                        self._robot.move_right(chunk, self.speed_ratio, show_progress=False)
+                    remaining -= chunk
+                    self._emit_pos()
+        except Exception as e:
+            self._log("ERROR", f"平移失败({direction}): {e}")
+            raise
+        time.sleep(self.settle_time)
+        self._emit_pos()
+
+    def _rotate_relative(self, direction, angle):
+        """执行指定方向/角度的相对旋转精度测试，不附加航向矫正。"""
+        try:
+            if self.control_api == "velocity_sequence":
+                vyaw = self.yaw_velocity if direction == "left" else -self.yaw_velocity
+                duration = math.radians(float(angle)) / self.yaw_velocity
+                steps = self._velocity_steps(vx=0.0, vy=0.0, vyaw=vyaw, duration=duration)
+                gait = "wheel_loco" if self._is_wheel else "walk"
+                self._log(
+                    "API",
+                    f"velocity_sequence(vel_seq=[vx=0, vy=0, vyaw={vyaw:.2f}, "
+                    f"duration={duration:.3f}s; stop], gait='{gait}', "
+                    f"speed_ratio={self.speed_ratio}, stand_down_after=False)",
+                )
+                self._robot.velocity_sequence(
+                    steps,
+                    gait=gait,
+                    speed_ratio=self.speed_ratio,
+                    stand_down_after=False,
+                    show_progress=False,
+                )
+            elif direction == "left":
+                self._log("API", f"rotate_left(angle={angle:.2f}°)")
+                self._robot.rotate_left(angle, show_progress=False)
+            else:
+                self._log("API", f"rotate_right(angle={angle:.2f}°)")
+                self._robot.rotate_right(angle, show_progress=False)
+        except Exception as e:
+            self._log("ERROR", f"旋转失败({direction}): {e}")
+            raise
+        time.sleep(self.settle_time)
+        self._emit_pos()
+
     @staticmethod
-    def _velocity_steps(vx, vyaw, duration):
+    def _velocity_steps(vx, vyaw, duration, vy=0.0):
         """生成最长 3 秒一段并以零速度结尾的速度序列。"""
         steps = []
         remaining = max(0.0, float(duration))
         while remaining > 1e-6:
             chunk = min(remaining, 3.0)
-            steps.append((float(vx), 0.0, float(vyaw), chunk))
+            steps.append((float(vx), float(vy), float(vyaw), chunk))
             remaining -= chunk
         steps.append((0.0, 0.0, 0.0, 0.3))
         return steps
@@ -398,7 +831,7 @@ class AutoMoveWorker(QThread):
             # SDK 速度序列采用标准角速度符号：+vyaw 左转，-vyaw 右转。
             vyaw = self.yaw_velocity if turn > 0 else -self.yaw_velocity
             duration = math.radians(abs(turn)) / self.yaw_velocity
-            steps = self._velocity_steps(vx=0.0, vyaw=vyaw, duration=duration)
+            steps = self._velocity_steps(vx=0.0, vy=0.0, vyaw=vyaw, duration=duration)
             gait = "wheel_loco" if self._is_wheel else "walk"
             self._log(
                 "API",
@@ -568,6 +1001,7 @@ class AutoMoveWorker(QThread):
                     imu["pos"] = [0.0, 0.0, 0.0]
 
                 # 读取姿态（相对初始姿态，站平时本体坐标轴竖直）
+                rpy_valid = True
                 try:
                     ori = rs.ori_body  # [roll, pitch, yaw] rad
                     rpy_abs = [float(v) for v in ori] if len(ori) >= 3 else [0.0, 0.0, 0.0]
@@ -579,8 +1013,13 @@ class AutoMoveWorker(QThread):
                     ]
                     imu["rpy_abs"] = rpy_abs
                 except Exception:
+                    rpy_valid = False
                     imu["rpy"] = [0.0, 0.0, 0.0]
                     imu["rpy_abs"] = [0.0, 0.0, 0.0]
+
+                with self._measurement_lock:
+                    if self._measurement_active and rpy_valid:
+                        self._measurement_yaws.append(float(imu["rpy_abs"][2]))
 
                 self.imu_data.emit(imu)
                 if self._active_target is not None:

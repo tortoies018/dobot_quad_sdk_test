@@ -48,7 +48,7 @@ class MainWindow(QMainWindow):
         grp_conn.setStyleSheet(self._grp_style("#4fc3f7"))
         form_conn = QFormLayout(grp_conn)
         conn_row = QHBoxLayout()
-        self.addr_edit = QLineEdit("10.30.12.196:50051")
+        self.addr_edit = QLineEdit("10.30.12.21:50051")
         self.addr_edit.setPlaceholderText("例如 10.30.12.154:50051")
         self.addr_edit.setStyleSheet(self._input_style())
         self.addr_edit.setToolTip("机器人 gRPC 地址，格式：IP:端口")
@@ -69,7 +69,11 @@ class MainWindow(QMainWindow):
         form = QFormLayout(grp)
 
         self.mode_combo = QComboBox()
-        self.mode_combo.addItems(["前后来回", "仅前进", "仅后退", "正方形"])
+        self.mode_combo.addItem("前后来回", "back_and_forth")
+        self.mode_combo.addItem("仅前进", "forward_only")
+        self.mode_combo.addItem("仅后退", "backward_only")
+        self.mode_combo.addItem("正方形", "square")
+        self.mode_combo.addItem("SDK指令精度测试（自动100组）", "precision_test")
         self.mode_combo.setStyleSheet(self._input_style())
         self.mode_combo.currentIndexChanged.connect(self._on_mode_changed)
         form.addRow("运动模式:", self.mode_combo)
@@ -414,9 +418,8 @@ class MainWindow(QMainWindow):
             self._worker.start()
 
         # 组装移动指令
-        mode_idx = self.mode_combo.currentIndex()
         params = {
-            "mode": ["back_and_forth", "forward_only", "backward_only", "square"][mode_idx],
+            "mode": self.mode_combo.currentData(),
             "control_api": self.control_api_combo.currentData(),
             "distance": self.dist_spin.value(),
             "side_len": self.side_spin.value(),
@@ -439,7 +442,16 @@ class MainWindow(QMainWindow):
         self._log_msg("─" * 40)
         loop_txt = "无限" if self.infinite_check.isChecked() else f"{self.rep_spin.value()}次"
         api_text = self.control_api_combo.currentText()
-        if self.mode_combo.currentText() == "正方形":
+        if self.mode_combo.currentData() == "precision_test":
+            self._log_msg(
+                f"[{self._ts()}] [INFO] 启动 SDK 指令精度测试: "
+                f"速度比=100%,50% 每个单项=100组 API={api_text}"
+            )
+            self._log_msg(
+                f"[{self._ts()}] [INFO] 前后、左右平移、左右旋转按往返配对执行，"
+                "预计记录3600条结果"
+            )
+        elif self.mode_combo.currentText() == "正方形":
             self._log_msg(f"[{self._ts()}] [INFO] 启动: 地址={addr} 模式=正方形 "
                           f"边长={self.side_spin.value()}m 循环={loop_txt} "
                           f"API={api_text} 速度比={self.speed_spin.value()}")
@@ -465,9 +477,18 @@ class MainWindow(QMainWindow):
 
     def _on_mode_changed(self, idx):
         """运动模式切换：正方形模式启用边长输入，禁用直线移动距离"""
-        is_square = self.mode_combo.itemText(idx) == "正方形"
+        mode = self.mode_combo.itemData(idx)
+        is_square = mode == "square"
+        is_precision = mode == "precision_test"
         self.side_spin.setEnabled(is_square)
-        self.dist_spin.setEnabled(not is_square)
+        self.dist_spin.setEnabled(not is_square and not is_precision)
+        if is_precision:
+            self.rep_spin.setValue(100)
+            self.infinite_check.setChecked(False)
+        self.rep_spin.setEnabled(not is_precision and not self.infinite_check.isChecked())
+        self.infinite_check.setEnabled(not is_precision)
+        self.speed_spin.setEnabled(not is_precision)
+        self.speed_slider.setEnabled(not is_precision)
 
     def _on_control_api_changed(self, _idx):
         """仅在速度序列控制下开放 vx/vyaw 参数。"""

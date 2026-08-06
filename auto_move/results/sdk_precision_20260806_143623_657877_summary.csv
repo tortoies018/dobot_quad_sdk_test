@@ -1,0 +1,9 @@
+﻿speed_ratio,control_api,pair_type,direction,target_value,target_unit,record_count,success_count,error_count,error_metric,mean_error,mean_abs_error,std_error,max_abs_error
+100,line_walk,前后移动,前进,1.0,m,100,100,0,distance_error_m,-0.420016,0.420016,0.046082,0.811079
+100,line_walk,前后移动,后退,1.0,m,100,100,0,distance_error_m,-0.310403,0.310403,0.066636,0.950387
+100,line_walk,前后移动,前进,2.0,m,100,100,0,distance_error_m,-1.14621,1.14621,0.022921,1.226622
+100,line_walk,前后移动,后退,2.0,m,100,100,0,distance_error_m,-0.963638,0.963638,0.015551,0.993851
+100,line_walk,前后移动,前进,3.0,m,100,100,0,distance_error_m,-1.87255,1.87255,0.021275,1.932496
+100,line_walk,前后移动,后退,3.0,m,100,100,0,distance_error_m,-1.62432,1.62432,0.017545,1.660498
+100,line_walk,左右平移,左平移,1.0,m,44,44,0,distance_error_m,-0.359231,0.359231,0.022558,0.427006
+100,line_walk,左右平移,右平移,1.0,m,44,43,1,distance_error_m,-0.347827,0.347827,0.031883,0.496927
