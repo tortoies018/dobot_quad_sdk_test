@@ -5,16 +5,17 @@ IMU 轨迹绘图控件——使用 PyOpenGL / pyqtgraph 绘制机器人在世界
 - 左键 / 中键拖拽：平移视角（Pan）
 - 右键拖拽：环绕视角（Orbit）
 - 滚轮：缩放
-- WASDQE：飞行镜头（W/S 沿视线前后，A/D 左右，Q/E 上下，保持相机朝向）
+- WASDQE：飞行镜头（W/S 沿视线前后，A/D 左右，Q/E 上下，Shift 加速）
 - R 键：重置视角
 """
 
 import math
+import time
 
 import numpy as np
 import pyqtgraph.opengl as gl
 from pyqtgraph import Vector
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import QSizePolicy
 
 
@@ -33,6 +34,7 @@ COLOR_IMU_X = np.array([0.9, 0.2, 0.2, 1.0], dtype=np.float32)
 COLOR_IMU_Y = np.array([0.2, 0.75, 0.2, 1.0], dtype=np.float32)
 COLOR_IMU_Z = np.array([0.2, 0.5, 0.9, 1.0], dtype=np.float32)
 COLOR_IDEAL = np.array([0.95, 0.55, 0.05, 1.0], dtype=np.float32)  # 理想轨迹（橙）
+COLOR_TARGET = (1.0, 0.65, 0.05, 1.0)
 
 
 def _repeat_color(color, n):
@@ -45,7 +47,7 @@ class TrajectoryPlot3D(gl.GLViewWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setMinimumSize(400, 220)
+        self.setMinimumSize(280, 180)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.setFocusPolicy(Qt.StrongFocus)
 
@@ -56,6 +58,7 @@ class TrajectoryPlot3D(gl.GLViewWidget):
         self._points = []
         self._clear_pts = []
         self._max_points = 5000
+        self._grid_spec = None
 
         # 网格（mode='lines' + translucent：每对顶点一条独立线段，颜色正常）
         self._grid_major = gl.GLLinePlotItem(mode="lines", width=2, glOptions='translucent')
@@ -70,7 +73,7 @@ class TrajectoryPlot3D(gl.GLViewWidget):
         self._build_origin_axes(1.5)
 
         # 轨迹线
-        self._line = gl.GLLinePlotItem(mode="lines", width=3, antialias=True, glOptions='translucent')
+        self._line = gl.GLLinePlotItem(mode="line_strip", width=3, antialias=True, glOptions='translucent')
         self.addItem(self._line)
 
         # 起点标记
@@ -90,11 +93,31 @@ class TrajectoryPlot3D(gl.GLViewWidget):
         self.addItem(self._imu_axes)
 
         # 理想轨迹（如正方形的期望路径）
-        self._ideal = gl.GLLinePlotItem(mode="lines", width=2, glOptions='translucent')
+        self._ideal = gl.GLLinePlotItem(mode="line_strip", width=2, antialias=True, glOptions='translucent')
         self.addItem(self._ideal)
+
+        # 目标点和箭头把“转向目标点，再走到目标点”的指令效果画出来。
+        self._ideal_targets = gl.GLScatterPlotItem(color=COLOR_TARGET, size=9)
+        self.addItem(self._ideal_targets)
+        self._ideal_arrows = gl.GLLinePlotItem(mode="lines", width=2, glOptions='translucent')
+        self.addItem(self._ideal_arrows)
 
         self._last_mouse_pos = None
         self._drag_button = None
+        self._pressed_keys = set()
+        self._camera_velocity = np.zeros(3, dtype=np.float64)
+        self._pending_pan = np.zeros(2, dtype=np.float64)
+        self._pending_orbit = np.zeros(2, dtype=np.float64)
+        self._zoom_target = float(self.opts.get("distance", 6.0))
+        self._last_frame_time = time.monotonic()
+
+        # 所有镜头变化统一在 60 FPS 定时器中处理，避免按键重复和鼠标
+        # 事件频率不同造成一顿一顿的观感。
+        self._camera_timer = QTimer(self)
+        self._camera_timer.setTimerType(Qt.PreciseTimer)
+        self._camera_timer.setInterval(16)
+        self._camera_timer.timeout.connect(self._animate_camera)
+        self._camera_timer.start()
 
     # ─── 网格：mode='lines'，每两点一条独立线段 ────────────────────
 
@@ -116,6 +139,10 @@ class TrajectoryPlot3D(gl.GLViewWidget):
         return np.array(pts, dtype=np.float32)
 
     def _build_grid(self, size, major_step, minor_step, cx, cy):
+        spec = (float(size), float(major_step), float(minor_step), float(cx), float(cy))
+        if spec == self._grid_spec:
+            return
+        self._grid_spec = spec
         pos_major = self._grid_segments(size, major_step, cx, cy)
         self._grid_major.setData(
             pos=pos_major,
@@ -204,20 +231,48 @@ class TrajectoryPlot3D(gl.GLViewWidget):
         self._clear_pts.clear()
         self.set_ideal_path(None)
         self._update()
-        self.setCameraPosition(distance=6.0, elevation=40, azimuth=45)
+        self._reset_camera()
 
     def set_ideal_path(self, points):
-        """设置理想轨迹（如正方形期望路径），points 为 [x,y,z] 列表"""
+        """设置指令轨迹；折线、目标点和箭头共同显示每段移动效果。"""
         if not points:
+            empty = np.zeros((0, 3), dtype=np.float32)
             self._ideal.setData(
-                pos=np.zeros((0, 3), dtype=np.float32),
+                pos=empty,
                 color=_repeat_color(COLOR_IDEAL, 0),
             )
+            self._ideal_targets.setData(pos=empty)
+            self._ideal_arrows.setData(pos=empty, color=_repeat_color(COLOR_IDEAL, 0))
             return
         pts = np.array(points, dtype=np.float32)
         self._ideal.setData(
             pos=pts,
             color=_repeat_color(COLOR_IDEAL, len(pts)),
+        )
+        self._ideal_targets.setData(pos=pts[1:])
+
+        arrow_segments = []
+        for start, target in zip(pts[:-1], pts[1:]):
+            direction = target[:2] - start[:2]
+            length = float(np.linalg.norm(direction))
+            if length <= 1e-6:
+                continue
+            unit = direction / length
+            side = np.array([-unit[1], unit[0]], dtype=np.float32)
+            arrow_len = min(max(length * 0.16, 0.06), 0.24)
+            tip = start + (target - start) * 0.68
+            wing_center = tip.copy()
+            wing_center[:2] -= unit * arrow_len
+            wing_a = wing_center.copy()
+            wing_b = wing_center.copy()
+            wing_a[:2] += side * arrow_len * 0.55
+            wing_b[:2] -= side * arrow_len * 0.55
+            arrow_segments.extend((tip, wing_a, tip, wing_b))
+        arrows = (np.array(arrow_segments, dtype=np.float32) if arrow_segments
+                  else np.zeros((0, 3), dtype=np.float32))
+        self._ideal_arrows.setData(
+            pos=arrows,
+            color=_repeat_color(COLOR_IDEAL, len(arrows)),
         )
 
     def _update(self):
@@ -263,7 +318,10 @@ class TrajectoryPlot3D(gl.GLViewWidget):
         total_size = max(math.ceil(max_range * 2.4), 20)
         major_step = max(1.0, round(total_size / 10))
         minor_step = max(0.2, round(major_step / 5, 1))
-        self._build_grid(float(total_size), major_step, minor_step, cx, cy)
+        # 网格中心按主刻度吸附，避免每个采样点都重建整张网格。
+        grid_cx = round(cx / major_step) * major_step
+        grid_cy = round(cy / major_step) * major_step
+        self._build_grid(float(total_size), major_step, minor_step, grid_cx, grid_cy)
 
     def update_imu_axes(self, x, y, z, roll, pitch, yaw, scale=0.4):
         self._build_imu_axes(x, y, z, roll, pitch, yaw, scale)
@@ -271,6 +329,7 @@ class TrajectoryPlot3D(gl.GLViewWidget):
     # ─── 交互 ──────────────────────────────────────────────────────
 
     def mousePressEvent(self, ev):
+        self.setFocus(Qt.MouseFocusReason)
         self._last_mouse_pos = ev.position()
         self._drag_button = ev.button()
         if ev.button() in (Qt.LeftButton, Qt.MiddleButton, Qt.RightButton):
@@ -285,12 +344,9 @@ class TrajectoryPlot3D(gl.GLViewWidget):
         delta = ev.position() - self._last_mouse_pos
         self._last_mouse_pos = ev.position()
         if self._drag_button in (Qt.LeftButton, Qt.MiddleButton):
-            # 左键 / 中键：平移视角（Pan）
-            dist = max(0.1, self.opts.get("distance", 6.0))
-            self.pan(delta.x() * 0.02 * dist, delta.y() * 0.02 * dist, 0, relative="view")
+            self._pending_pan += (delta.x(), delta.y())
         elif self._drag_button == Qt.RightButton:
-            # 右键：环绕视角（Orbit）
-            self.orbit(-delta.x() * 0.4, delta.y() * 0.4)
+            self._pending_orbit += (delta.x(), delta.y())
         else:
             super().mouseMoveEvent(ev)
             return
@@ -299,58 +355,106 @@ class TrajectoryPlot3D(gl.GLViewWidget):
     def mouseReleaseEvent(self, ev):
         self._drag_button = None
         self._last_mouse_pos = None
-        super().mouseReleaseEvent(ev)
+        ev.accept()
 
     def wheelEvent(self, ev):
         delta = ev.angleDelta().y()
         if delta != 0:
-            factor = 0.9 if delta > 0 else 1.1
-            self.setCameraPosition(distance=max(0.1, self.opts.get("distance", 6.0) * factor))
+            steps = delta / 120.0
+            self._zoom_target = min(1000.0, max(0.08, self._zoom_target * math.exp(-steps * 0.16)))
         ev.accept()
 
     def keyPressEvent(self, ev):
         key = ev.key()
         if key == Qt.Key_R:
-            self.setCameraPosition(distance=6.0, elevation=40, azimuth=45)
+            self._reset_camera()
+            ev.accept()
             return
-        if key in (Qt.Key_W, Qt.Key_S, Qt.Key_A, Qt.Key_D, Qt.Key_Q, Qt.Key_E):
-            self._move_camera_by_key(key)
+        if key in (Qt.Key_W, Qt.Key_S, Qt.Key_A, Qt.Key_D, Qt.Key_Q, Qt.Key_E, Qt.Key_Shift):
+            if ev.isAutoRepeat():
+                ev.accept()
+                return
+            self._pressed_keys.add(key)
             ev.accept()
             return
         super().keyPressEvent(ev)
 
-    def _move_camera_by_key(self, key):
-        """Unity 式飞行镜头：W/S 沿视线前后，A/D 水平左右，Q/E 垂直升降
+    def keyReleaseEvent(self, ev):
+        key = ev.key()
+        if ev.isAutoRepeat() and key in self._pressed_keys:
+            ev.accept()
+            return
+        if key in self._pressed_keys:
+            self._pressed_keys.discard(key)
+            ev.accept()
+            return
+        super().keyReleaseEvent(ev)
 
-        相机按自身朝向平移（保持姿态与距离），而非绕目标缩放，
-        因此 W 没有距离下限，靠近物体时仍可前进。
-        """
-        dist = self.opts.get("distance", 6.0)
-        step = max(0.02, dist * 0.05)   # 步长随距离缩放
+    def focusOutEvent(self, ev):
+        self._pressed_keys.clear()
+        super().focusOutEvent(ev)
+
+    def _animate_camera(self):
+        """按真实帧间隔平滑更新平移、环绕、缩放和飞行镜头。"""
+        now = time.monotonic()
+        dt = min(max(now - self._last_frame_time, 0.0), 0.05)
+        self._last_frame_time = now
+
+        if np.any(self._pending_orbit):
+            dx, dy = self._pending_orbit
+            self._pending_orbit[:] = 0.0
+            self.orbit(-dx * 0.28, dy * 0.28)
+        if np.any(self._pending_pan):
+            dx, dy = self._pending_pan
+            self._pending_pan[:] = 0.0
+            # GLViewWidget.pan(view) 的参数单位本来就是屏幕像素。
+            self.pan(dx, dy, 0.0, relative="view")
+
+        current_distance = float(self.opts.get("distance", 6.0))
+        zoom_alpha = 1.0 - math.exp(-14.0 * dt)
+        next_distance = current_distance + (self._zoom_target - current_distance) * zoom_alpha
+        if abs(next_distance - current_distance) > 1e-5:
+            self.setCameraPosition(distance=next_distance)
 
         elev = math.radians(self.opts.get("elevation", 30))
         azim = math.radians(self.opts.get("azimuth", 45))
+        outward = np.array([
+            math.cos(elev) * math.cos(azim),
+            math.cos(elev) * math.sin(azim),
+            math.sin(elev),
+        ])
+        forward = -outward
+        right = np.array([-math.sin(azim), math.cos(azim), 0.0])
+        up = np.array([0.0, 0.0, 1.0])
 
-        # 视线方向（相机 → 目标）与相机右方向（水平面内）
-        vx = math.cos(elev) * math.cos(azim)
-        vy = math.cos(elev) * math.sin(azim)
-        vz = math.sin(elev)
-        rx, ry = -math.sin(azim), math.cos(azim)
+        move = np.zeros(3, dtype=np.float64)
+        move += forward * ((Qt.Key_W in self._pressed_keys) - (Qt.Key_S in self._pressed_keys))
+        move += right * ((Qt.Key_D in self._pressed_keys) - (Qt.Key_A in self._pressed_keys))
+        move += up * ((Qt.Key_E in self._pressed_keys) - (Qt.Key_Q in self._pressed_keys))
+        length = float(np.linalg.norm(move))
+        if length > 1e-8:
+            move /= length
 
-        c = self.opts.get("center")
-        dx = dy = dz = 0.0
-        if key == Qt.Key_W:                      # 前进（沿视线，相机看向 -v）
-            dx, dy, dz = -vx * step, -vy * step, -vz * step
-        elif key == Qt.Key_S:                    # 后退（逆视线）
-            dx, dy, dz = vx * step, vy * step, vz * step
-        elif key == Qt.Key_A:                    # 左移
-            dx, dy = -rx * step, -ry * step
-        elif key == Qt.Key_D:                    # 右移
-            dx, dy = rx * step, ry * step
-        elif key == Qt.Key_Q:                    # 下降
-            dz = -step
-        elif key == Qt.Key_E:                    # 上升
-            dz = step
-        else:
-            return
-        self.setCameraPosition(pos=Vector(c.x() + dx, c.y() + dy, c.z() + dz))
+        # 距离越远飞行越快；指数插值提供类似 Unity 编辑器的加减速。
+        speed = max(0.15, current_distance * 0.8)
+        if Qt.Key_Shift in self._pressed_keys:
+            speed *= 3.0
+        target_velocity = move * speed
+        velocity_alpha = 1.0 - math.exp(-12.0 * dt)
+        self._camera_velocity += (target_velocity - self._camera_velocity) * velocity_alpha
+        if float(np.linalg.norm(self._camera_velocity)) > 1e-5 and dt > 0.0:
+            offset = self._camera_velocity * dt
+            center = self.opts.get("center")
+            self.setCameraPosition(pos=Vector(
+                center.x() + offset[0],
+                center.y() + offset[1],
+                center.z() + offset[2],
+            ))
+
+    def _reset_camera(self):
+        self._pressed_keys.clear()
+        self._camera_velocity[:] = 0.0
+        self._pending_pan[:] = 0.0
+        self._pending_orbit[:] = 0.0
+        self._zoom_target = 6.0
+        self.setCameraPosition(pos=Vector(0.0, 0.0, 0.0), distance=6.0, elevation=40, azimuth=45)

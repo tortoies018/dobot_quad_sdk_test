@@ -50,6 +50,7 @@ class AutoMoveWorker(QThread):
         self.speed_ratio = 50          # 速度比 [10,100]（运行中可实时修改）
         self.settle_time = 0.5         # 移动/转向后姿态稳定等待时间 (秒)
         self.yaw_threshold = 3.0       # 航向矫正阈值 (度)
+        self.position_threshold = 0.02  # 到达目标点判定阈值 (m)
 
     # ─── 控制接口（主线程调用） ────────────────────
 
@@ -166,10 +167,16 @@ class AutoMoveWorker(QThread):
         # 计算并发送理想轨迹（指令移动效果：起点 → 目的地线段 / 正方形）
         start = self._read_pos()
         sx, sy = float(start[0]), float(start[1])
+        square_targets = []
         if self.mode == "square":
             pts = self._ideal_square_points(start, self._initial_yaw, self.side_len)
+            square_targets = pts[1:]
             self.ideal_path.emit(pts)
-            self._log("INFO", f"理想轨迹: 正方形，边长 {self.side_len:.2f}m")
+            self._log(
+                "INFO",
+                f"指令轨迹: 正方形，边长 {self.side_len:.2f}m；"
+                "每条边按实时位置转向目标点并计算剩余距离",
+            )
         else:
             h = math.radians(self._initial_yaw)
             u = (math.cos(h), math.sin(h))
@@ -203,7 +210,7 @@ class AutoMoveWorker(QThread):
 
                 if do_square:
                     self.progress.emit(cycle, total, f"正方形 边长{self.side_len:.2f}m")
-                    self._run_square(cycle, total)
+                    self._run_square(cycle, total, square_targets)
                 elif do_forward:
                     self.progress.emit(cycle, total, f"前进 {self.distance:.2f}m")
                     self._move("forward", self.distance)
@@ -235,12 +242,18 @@ class AutoMoveWorker(QThread):
     def _move(self, direction, distance):
         """执行一次移动——使用通用移动 API（line_walk 系），不改变机器人状态"""
         try:
-            if direction == "forward":
-                self._log("API", f"walk_forward(distance={distance:.2f}m, speed_ratio={self.speed_ratio})")
-                self._robot.walk_forward(distance, self.speed_ratio, show_progress=False)
-            else:
-                self._log("API", f"walk_backward(distance={distance:.2f}m, speed_ratio={self.speed_ratio})")
-                self._robot.walk_backward(distance, self.speed_ratio, show_progress=False)
+            # SDK 单条直线移动指令上限为 3m；较长距离拆成连续指令。
+            remaining = max(0.0, float(distance))
+            while remaining > 1e-6 and self._running and self._move_running:
+                chunk = min(remaining, 3.0)
+                if direction == "forward":
+                    self._log("API", f"walk_forward(distance={chunk:.2f}m, speed_ratio={self.speed_ratio})")
+                    self._robot.walk_forward(chunk, self.speed_ratio, show_progress=False)
+                else:
+                    self._log("API", f"walk_backward(distance={chunk:.2f}m, speed_ratio={self.speed_ratio})")
+                    self._robot.walk_backward(chunk, self.speed_ratio, show_progress=False)
+                remaining -= chunk
+                self._emit_pos()
         except Exception as e:
             self._log("ERROR", f"移动失败({direction}): {e}")
             raise
@@ -260,48 +273,82 @@ class AutoMoveWorker(QThread):
         误差在阈值内则不动。
         """
         try:
-            yaw = self._get_yaw()
-            err = self._normalize_angle(yaw - self._initial_yaw)
-            if abs(err) <= self.yaw_threshold:
-                self._log(
-                    "INFO",
-                    f"航向: 偏航 {yaw:.2f}°，误差 {err:.2f}°（在阈值内，无需转向）",
-                )
-                return
-            self._log(
-                "INFO",
-                f"航向矫正: 偏航 {yaw:.2f}°，误差 {err:.2f}°，"
-                f"{'右转' if err > 0 else '左转'} {abs(err):.2f}°",
-            )
-            if err > 0:
-                self._log("API", f"rotate_right(angle={abs(err):.2f}°)")
-                self._robot.rotate_right(abs(err), show_progress=False)
-            else:
-                self._log("API", f"rotate_left(angle={abs(err):.2f}°)")
-                self._robot.rotate_left(abs(err), show_progress=False)
-            time.sleep(self.settle_time)
-            self._emit_pos()   # 转向后记录轨迹点
+            self._turn_to_heading(self._initial_yaw, "航向矫正")
         except Exception as e:
             self._log("ERROR", f"航向矫正失败: {e}")
 
+    def _turn_to_heading(self, target_yaw, context="转向"):
+        """按当前 IMU 偏航转到世界坐标目标航向，只执行一次实际误差角。"""
+        current_yaw = self._get_yaw()
+        turn = self._normalize_angle(float(target_yaw) - current_yaw)
+        if abs(turn) <= self.yaw_threshold:
+            self._log(
+                "INFO",
+                f"{context}: 当前 {current_yaw:.2f}°，目标 {target_yaw:.2f}°，"
+                f"误差 {turn:.2f}°（在阈值内）",
+            )
+            return
+
+        direction = "左转" if turn > 0 else "右转"
+        self._log(
+            "INFO",
+            f"{context}: 当前 {current_yaw:.2f}°，目标 {target_yaw:.2f}°，"
+            f"{direction} {abs(turn):.2f}°",
+        )
+        if turn > 0:
+            self._log("API", f"rotate_left(angle={abs(turn):.2f}°)")
+            self._robot.rotate_left(abs(turn), show_progress=False)
+        else:
+            self._log("API", f"rotate_right(angle={abs(turn):.2f}°)")
+            self._robot.rotate_right(abs(turn), show_progress=False)
+        time.sleep(self.settle_time)
+        self._emit_pos()
+
     # ─── 正方形运动 ────────────────────────────────
 
-    def _run_square(self, cycle, total):
-        """正方形运动：前进一条边 → 右转90° → 前进 → ... 共 4 条边，最后转回初始方向"""
-        for i in range(4):
+    def _run_square(self, cycle, total, targets):
+        """逐个追踪正方形顶点：转向目标点，再移动当前位置到目标点的距离。"""
+        for i, target in enumerate(targets):
             if not (self._running and self._move_running):
                 return
-            self.progress.emit(cycle, total, f"正方形 第{i + 1}/4 边")
-            self._move("forward", self.side_len)      # 走一条边
-            if not (self._running and self._move_running):
-                return
-            if i < 3:
-                self._log("API", "rotate_right(angle=90.0°)")   # 右转90°（转角）
-                self._robot.rotate_right(90, show_progress=False)
-                time.sleep(self.settle_time)
-                self._emit_pos()
+            current = self._read_pos()
+            dx = float(target[0]) - float(current[0])
+            dy = float(target[1]) - float(current[1])
+            remaining = math.hypot(dx, dy)
+            self.progress.emit(
+                cycle,
+                total,
+                f"正方形 第{i + 1}/4 边 → 目标({target[0]:.2f}, {target[1]:.2f})",
+            )
+            if remaining <= self.position_threshold:
+                self._log(
+                    "INFO",
+                    f"目标点 {i + 1}: 已在目标范围内，剩余 {remaining:.3f}m",
+                )
+                continue
 
-        # 正方形走完，转回初始方向（按 IMU 偏航一次转向纠正累计漂移）
+            target_yaw = math.degrees(math.atan2(dy, dx))
+            self._log(
+                "INFO",
+                f"目标点 {i + 1}: ({target[0]:.3f}, {target[1]:.3f})，"
+                f"当前位置 ({current[0]:.3f}, {current[1]:.3f})，"
+                f"目标航向 {target_yaw:.2f}°",
+            )
+            self._turn_to_heading(target_yaw, f"转向目标点 {i + 1}")
+            if not (self._running and self._move_running):
+                return
+
+            # 转向可能带来轻微位移，移动前重新计算到同一目标点的距离。
+            current = self._read_pos()
+            remaining = math.hypot(
+                float(target[0]) - float(current[0]),
+                float(target[1]) - float(current[1]),
+            )
+            if remaining > self.position_threshold:
+                self._log("INFO", f"移动到目标点 {i + 1}: 剩余距离 {remaining:.3f}m")
+                self._move("forward", remaining)
+
+        # 回到起点后恢复初始朝向，下一循环仍追踪同一组世界坐标顶点。
         if self._running and self._move_running:
             self.progress.emit(cycle, total, "正方形完成，转回初始方向")
             self._correct_heading_once()

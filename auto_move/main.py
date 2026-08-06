@@ -12,6 +12,7 @@ from PySide6.QtWidgets import (
     QGroupBox, QPushButton, QLabel, QTextEdit, QStatusBar,
     QFormLayout, QSpinBox, QDoubleSpinBox, QCheckBox, QComboBox,
     QProgressBar, QSlider, QLineEdit,
+    QSplitter,
 )
 
 from auto_worker import AutoMoveWorker
@@ -24,13 +25,19 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Dobot Quad 自动前后移动 (3D轨迹)")
-        self.setMinimumSize(1180, 780)
+        # 主窗口本身可自由缩放；内部区域由 QSplitter 单独调节。
+        self.setMinimumSize(760, 560)
         self.resize(1320, 880)
         self.setStyleSheet("QMainWindow { background:#202225; }")
 
         central = QWidget()
         self.setCentralWidget(central)
-        main = QHBoxLayout(central)
+        main = QVBoxLayout(central)
+        main_splitter = QSplitter(Qt.Horizontal)
+        main_splitter.setChildrenCollapsible(False)
+        main_splitter.setHandleWidth(6)
+        main_splitter.setStyleSheet("QSplitter::handle { background:#42464c; }")
+        main.addWidget(main_splitter)
 
         # ═══════ 左侧：参数设置 ═══════
         left = QWidget()
@@ -168,7 +175,8 @@ class MainWindow(QMainWindow):
         left_layout.addWidget(grp_status)
 
         left_layout.addStretch()
-        main.addWidget(left, 2)
+        left.setMinimumWidth(270)
+        main_splitter.addWidget(left)
 
         # ═══════ 右侧：状态 + 日志 ═══════
         right = QWidget()
@@ -205,24 +213,40 @@ class MainWindow(QMainWindow):
                                      "QPushButton:hover { background:#f57c00; }")
         btn_clear_traj.clicked.connect(self.traj_plot.clear)
         v4.addWidget(btn_clear_traj)
-        hint = QLabel("左/中键平移 | 右键旋转 | 滚轮缩放 | WASDQE飞行 | R重置")
+        hint = QLabel("左/中键平移 | 右键旋转 | 滚轮缩放 | WASDQE飞行（Shift加速）| R重置")
         hint.setStyleSheet("color:#888; font:11px;")
         hint.setAlignment(Qt.AlignCenter)
         v4.addWidget(hint)
-        legend = QLabel("橙色线: 指令理想轨迹（起点→目的地）")
+        legend = QLabel("橙色折线/箭头: 指令移动方向　橙色点: 每段目标位置")
         legend.setStyleSheet("color:#ff9800; font:11px;")
         legend.setAlignment(Qt.AlignCenter)
         v4.addWidget(legend)
-        right_layout.addWidget(grp4, 1)
+        # 轨迹和日志都是可调大小的子区域。
+        detail_splitter = QSplitter(Qt.Vertical)
+        detail_splitter.setChildrenCollapsible(False)
+        detail_splitter.setHandleWidth(6)
+        detail_splitter.setStyleSheet("QSplitter::handle { background:#42464c; }")
+        detail_splitter.addWidget(grp4)
 
-        # 日志
-        right_layout.addWidget(QLabel("日志", styleSheet="color:#4fc3f7; font:bold 14px;"))
+        log_panel = QWidget()
+        log_layout = QVBoxLayout(log_panel)
+        log_layout.setContentsMargins(0, 0, 0, 0)
+        log_layout.addWidget(QLabel("日志", styleSheet="color:#4fc3f7; font:bold 14px;"))
         self._log = QTextEdit()
         self._log.setReadOnly(True)
-        self._log.setMinimumHeight(150)
+        self._log.setMinimumHeight(80)
         self._log.setStyleSheet("background:#101214; color:#7ee787; font:12px monospace; border:1px solid #3a3d42;")
-        right_layout.addWidget(self._log, 1)
-        main.addWidget(right, 3)
+        log_layout.addWidget(self._log)
+        detail_splitter.addWidget(log_panel)
+        detail_splitter.setStretchFactor(0, 4)
+        detail_splitter.setStretchFactor(1, 1)
+        right_layout.addWidget(detail_splitter, 1)
+
+        right.setMinimumWidth(380)
+        main_splitter.addWidget(right)
+        main_splitter.setStretchFactor(0, 2)
+        main_splitter.setStretchFactor(1, 3)
+        main_splitter.setSizes([430, 850])
 
         # ═══════ 状态栏 ═══════
         self._sb = QStatusBar()
@@ -446,7 +470,8 @@ def main():
     app = QApplication(sys.argv)
     app.setApplicationName("Dobot Quad 自动移动")
     win = MainWindow()
-    win.show()
+    # 默认占满当前屏幕的可用桌面区域，同时保留标题栏和还原按钮。
+    win.showMaximized()
     sys.exit(app.exec())
 
 
