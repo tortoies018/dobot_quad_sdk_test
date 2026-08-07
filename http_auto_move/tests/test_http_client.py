@@ -90,6 +90,19 @@ class MH4HttpClientTest(unittest.TestCase):
             ("POST", "/settings/movement/action", {"id": 20}),
         )
 
+    def test_raw_request_accepts_top_level_json_array(self):
+        self.client.raw_request("POST", "/algs/slam/queryProgressing", ["map1"])
+        self.assertEqual(
+            self.requests[-1],
+            ("POST", "/algs/slam/queryProgressing", ["map1"]),
+        )
+
+    def test_raw_request_rejects_full_or_protocol_relative_url(self):
+        with self.assertRaises(ValueError):
+            self.client.raw_request("GET", "http://example.com/path")
+        with self.assertRaises(ValueError):
+            self.client.raw_request("GET", "//example.com/path")
+
     def test_emergency_stop(self):
         self.client.emergency_stop(True)
         self.assertEqual(

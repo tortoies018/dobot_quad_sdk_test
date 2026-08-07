@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import json
 import queue
 import threading
 import time
@@ -27,6 +28,7 @@ class HttpAutoMoveWorker(QThread):
     log_msg = Signal(str)
     finished_ok = Signal(str)
     emergency_result = Signal(bool, str)
+    manual_api_result = Signal(bool, str, object)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -67,6 +69,21 @@ class HttpAutoMoveWorker(QThread):
 
     def start_move(self, command: dict[str, Any]) -> None:
         self._commands.put(dict(command))
+
+    def call_api(
+        self,
+        method: str,
+        path: str,
+        payload: Any | None,
+        port: int,
+    ) -> None:
+        self._commands.put({
+            "_kind": "manual_api",
+            "method": method,
+            "path": path,
+            "payload": payload,
+            "port": int(port),
+        })
 
     def stop_move(self) -> None:
         self._stop_motion.set()
@@ -144,6 +161,9 @@ class HttpAutoMoveWorker(QThread):
                     continue
                 if command is None:
                     break
+                if command.get("_kind") == "manual_api":
+                    self._execute_manual_api(command)
+                    continue
                 self._stop_motion.clear()
                 self._execute(command)
         finally:
@@ -369,6 +389,74 @@ class HttpAutoMoveWorker(QThread):
             self.finished_ok.emit(f"动作执行失败: {exc}")
         finally:
             self._safe_stop(client)
+
+    def _execute_manual_api(self, command: dict[str, Any]) -> None:
+        """在后台执行控制台请求，避免 HTTP 超时阻塞 Qt 界面。"""
+        current = self._client
+        if current is None:
+            self.manual_api_result.emit(False, "尚未连接机器人", {})
+            return
+        method = str(command.get("method", "GET")).upper()
+        path = str(command.get("path", "/"))
+        port = max(1, min(65535, int(command.get("port", 22000))))
+        payload = command.get("payload")
+        try:
+            parsed = urlsplit(current.control_base)
+            host = parsed.hostname
+            if not host:
+                raise ValueError("无法从当前连接解析机器人 IP")
+            display_host = f"[{host}]" if ":" in host else host
+            base = f"{parsed.scheme}://{display_host}:{port}"
+            parsed_port = parsed.port or 22000
+            client = (
+                current
+                if port == parsed_port
+                else MH4HttpClient(base, timeout=self._timeout)
+            )
+            if (
+                method == "POST"
+                and path.split("?", 1)[0]
+                == "/settings/movement/joystickControl"
+                and isinstance(payload, dict)
+            ):
+                payload = dict(payload)
+                payload["timestamp"] = int(time.time() * 1000)
+
+            safe_payload = self._redact_payload(payload)
+            payload_text = (
+                ""
+                if payload is None
+                else " body=" + json.dumps(safe_payload, ensure_ascii=False)
+            )
+            self._log("API", f"{method} {base}{path}{payload_text}")
+            result = client.raw_request(method, path, payload)
+            rejected = isinstance(result, dict) and result.get("status") is False
+            result_preview = json.dumps(
+                self._redact_payload(result), ensure_ascii=False, default=str
+            )
+            if len(result_preview) > 1200:
+                result_preview = result_preview[:1200] + "…"
+            self._log("WARN" if rejected else "API", f"响应: {result_preview}")
+            self.manual_api_result.emit(not rejected, f"{method} {base}{path}", result)
+        except Exception as exc:
+            self._log("ERROR", f"手动接口请求失败: {method} :{port}{path}: {exc}")
+            self.manual_api_result.emit(False, f"{method} :{port}{path}: {exc}", {})
+
+    @classmethod
+    def _redact_payload(cls, value: Any) -> Any:
+        """日志中隐藏密码和图传令牌，实际 HTTP 请求仍使用原值。"""
+        if isinstance(value, dict):
+            redacted = {}
+            for key, item in value.items():
+                lowered = str(key).lower()
+                if lowered in {"passwd", "password", "publishertoken", "token"}:
+                    redacted[key] = "***"
+                else:
+                    redacted[key] = cls._redact_payload(item)
+            return redacted
+        if isinstance(value, list):
+            return [cls._redact_payload(item) for item in value]
+        return value
 
     def _drive_once(
         self,

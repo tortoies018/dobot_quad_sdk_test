@@ -57,7 +57,9 @@ class MH4HttpClient:
         self,
         method: str,
         path: str,
-        payload: dict[str, Any] | None = None,
+        payload: Any | None = None,
+        *,
+        allow_non_json: bool = False,
     ) -> Any:
         body = None
         headers = {"Accept": "application/json"}
@@ -70,6 +72,10 @@ class MH4HttpClient:
         try:
             with urlopen(request, timeout=self.timeout) as response:
                 raw = response.read()
+                headers = getattr(response, "headers", None)
+                content_type = (
+                    headers.get("Content-Type", "") if headers is not None else ""
+                )
         except HTTPError as exc:
             detail = exc.read().decode("utf-8", errors="replace").strip()
             suffix = f": {detail}" if detail else ""
@@ -83,8 +89,25 @@ class MH4HttpClient:
         try:
             return json.loads(raw.decode("utf-8"))
         except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            if allow_non_json:
+                return {
+                    "responseType": "non-json",
+                    "contentType": content_type,
+                    "size": len(raw),
+                    "preview": raw[:512].decode("utf-8", errors="replace"),
+                }
             preview = raw[:160].decode("utf-8", errors="replace")
             raise MH4HttpError(f"接口返回的不是有效 JSON: {preview!r}") from exc
+
+    def raw_request(self, method: str, path: str, payload: Any | None = None) -> Any:
+        """调用目录或用户输入的 JSON 接口，不强制要求 ``status=true``。"""
+        method = method.strip().upper()
+        if method not in ("GET", "POST"):
+            raise ValueError("手动 HTTP 控制台只支持 GET 或 POST")
+        path = path.strip()
+        if not path.startswith("/") or path.startswith("//"):
+            raise ValueError("接口路径必须以单个 / 开头")
+        return self._request(method, path, payload, allow_non_json=True)
 
     @staticmethod
     def _require_success(result: Any, operation: str) -> Any:

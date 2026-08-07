@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import math
 import sys
 import time
@@ -22,6 +23,7 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QMainWindow,
     QMessageBox,
+    QPlainTextEdit,
     QPushButton,
     QSpinBox,
     QSplitter,
@@ -32,10 +34,12 @@ from PySide6.QtWidgets import (
 )
 
 try:
+    from .api_catalog import ENDPOINTS, ApiEndpoint
     from .http_client import MH4HttpClient
     from .http_worker import HttpAutoMoveWorker
     from .motion import direction_axes
 except ImportError:  # 支持 python3 http_auto_move/main.py
+    from api_catalog import ENDPOINTS, ApiEndpoint
     from http_client import MH4HttpClient
     from http_worker import HttpAutoMoveWorker
     from motion import direction_axes
@@ -64,12 +68,14 @@ class MainWindow(QMainWindow):
         self._worker.log_msg.connect(self._append_log)
         self._worker.finished_ok.connect(self._on_finished)
         self._worker.emergency_result.connect(self._on_emergency_result)
+        self._worker.manual_api_result.connect(self._on_manual_api_result)
         self._worker.finished.connect(self._on_worker_thread_finished)
         self._connected = False
         self._moving = False
         self._last_http_rpy = [0.0, 0.0, 0.0]
         self._last_position: list[float] | None = None
         self._action_configs: list[dict[str, Any]] = []
+        self._api_request_pending = False
 
         central = QWidget()
         self.setCentralWidget(central)
@@ -83,9 +89,7 @@ class MainWindow(QMainWindow):
         left = QWidget()
         left_layout = QVBoxLayout(left)
         left_layout.addWidget(self._build_connection_group())
-        left_layout.addWidget(self._build_action_group(), 1)
-        left_layout.addWidget(self._build_common_group())
-        left_layout.addLayout(self._build_control_buttons())
+        left_layout.addWidget(self._build_operation_tabs(), 1)
         splitter.addWidget(left)
 
         right = QWidget()
@@ -151,6 +155,105 @@ class MainWindow(QMainWindow):
         note.setStyleSheet("color:#a8b3bc; font:11px;")
         form.addRow(note)
         return group
+
+    def _build_operation_tabs(self) -> QTabWidget:
+        tabs = QTabWidget()
+        tabs.setStyleSheet(
+            "QTabWidget::pane { border:1px solid #55585e; background:#292b30; }"
+            "QTabBar::tab { background:#3a3d42; color:#d8d8d8; padding:8px 14px; }"
+            "QTabBar::tab:selected { background:#1565c0; color:#fff; }"
+        )
+
+        auto_tab = QWidget()
+        auto_layout = QVBoxLayout(auto_tab)
+        auto_layout.addWidget(self._build_action_group(), 1)
+        auto_layout.addWidget(self._build_common_group())
+        auto_layout.addLayout(self._build_control_buttons())
+        tabs.addTab(auto_tab, "自动来回动作")
+
+        tabs.addTab(self._build_api_console(), f"全部 HTTP 接口（{len(ENDPOINTS)}）")
+        return tabs
+
+    def _build_api_console(self) -> QWidget:
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
+
+        note = QLabel(
+            "接口目录来自《MH4 HTTP接口定义》。路径和 JSON 可编辑；22000 为控制器，"
+            "22002 为算法服务。带 ⚠ 的接口会强制二次确认。"
+        )
+        note.setWordWrap(True)
+        note.setStyleSheet(
+            "color:#ffcc80; background:#342e24; border:1px solid #795548; "
+            "border-radius:4px; padding:7px;"
+        )
+        layout.addWidget(note)
+
+        form = QFormLayout()
+        self.api_endpoint_combo = QComboBox()
+        self.api_endpoint_combo.setEditable(True)
+        self.api_endpoint_combo.setInsertPolicy(QComboBox.NoInsert)
+        self.api_endpoint_combo.setMaxVisibleItems(24)
+        self.api_endpoint_combo.setStyleSheet(self._input_style())
+        for endpoint in ENDPOINTS:
+            self.api_endpoint_combo.addItem(endpoint.label, endpoint)
+        safe_index = next(
+            index
+            for index, endpoint in enumerate(ENDPOINTS)
+            if endpoint.method == "GET" and endpoint.path == "/settings/version"
+        )
+        self.api_endpoint_combo.setCurrentIndex(safe_index)
+        form.addRow("接口目录:", self.api_endpoint_combo)
+
+        route = QHBoxLayout()
+        self.api_method_combo = QComboBox()
+        self.api_method_combo.addItems(["GET", "POST"])
+        self.api_method_combo.setStyleSheet(self._input_style())
+        route.addWidget(self.api_method_combo)
+        self.api_port_spin = QSpinBox()
+        self.api_port_spin.setRange(1, 65535)
+        self.api_port_spin.setValue(22000)
+        self.api_port_spin.setStyleSheet(self._input_style())
+        route.addWidget(self.api_port_spin)
+        self.api_path_edit = QLineEdit()
+        self.api_path_edit.setStyleSheet(self._input_style())
+        route.addWidget(self.api_path_edit, 1)
+        form.addRow("方法 / 端口 / 路径:", route)
+        layout.addLayout(form)
+
+        layout.addWidget(QLabel("请求 JSON（GET 或无请求体时留空）:"))
+        self.api_body_edit = QPlainTextEdit()
+        self.api_body_edit.setPlaceholderText("{}")
+        self.api_body_edit.setStyleSheet(
+            "background:#101214; color:#e6edf3; font:12px monospace; "
+            "border:1px solid #3a3d42;"
+        )
+        layout.addWidget(self.api_body_edit, 2)
+
+        buttons = QHBoxLayout()
+        self.api_confirm_check = QCheckBox("普通 POST 也确认")
+        self.api_confirm_check.setChecked(True)
+        self.api_confirm_check.setStyleSheet("color:#ffb74d;")
+        buttons.addWidget(self.api_confirm_check)
+        buttons.addStretch()
+        self.api_send_button = QPushButton("发送 HTTP 请求")
+        self.api_send_button.setStyleSheet(self._button_style("#1565c0", "#1e88e5"))
+        self.api_send_button.clicked.connect(self._send_manual_api)
+        buttons.addWidget(self.api_send_button)
+        layout.addLayout(buttons)
+
+        layout.addWidget(QLabel("响应:"))
+        self.api_response_edit = QPlainTextEdit()
+        self.api_response_edit.setReadOnly(True)
+        self.api_response_edit.setStyleSheet(
+            "background:#101214; color:#7ee787; font:12px monospace; "
+            "border:1px solid #3a3d42;"
+        )
+        layout.addWidget(self.api_response_edit, 2)
+
+        self.api_endpoint_combo.currentIndexChanged.connect(self._on_api_selected)
+        self._on_api_selected(self.api_endpoint_combo.currentIndex())
+        return tab
 
     def _build_action_group(self) -> QGroupBox:
         group = QGroupBox("自动动作（HTTP 摇杆时序）")
@@ -326,6 +429,94 @@ class MainWindow(QMainWindow):
 
     # ── 交互 ─────────────────────────────────────
 
+    def _on_api_selected(self, index: int) -> None:
+        endpoint = self.api_endpoint_combo.itemData(index)
+        if not isinstance(endpoint, ApiEndpoint):
+            return
+        self.api_method_combo.setCurrentText(endpoint.method)
+        self.api_port_spin.setValue(endpoint.port)
+        self.api_path_edit.setText(endpoint.path)
+        if endpoint.payload is None:
+            self.api_body_edit.clear()
+        else:
+            self.api_body_edit.setPlainText(
+                json.dumps(endpoint.payload, ensure_ascii=False, indent=2)
+            )
+
+    def _send_manual_api(self) -> None:
+        if not self._connected:
+            QMessageBox.warning(self, "尚未连接", "请先连接机器狗再调用接口。")
+            return
+        if self._moving:
+            QMessageBox.warning(self, "动作执行中", "请先停止自动动作再调用手动接口。")
+            return
+        if self._api_request_pending:
+            return
+
+        method = self.api_method_combo.currentText().strip().upper()
+        port = self.api_port_spin.value()
+        path = self.api_path_edit.text().strip()
+        if method not in ("GET", "POST"):
+            QMessageBox.warning(self, "方法错误", "只支持 GET 或 POST。")
+            return
+        if not path.startswith("/") or path.startswith("//"):
+            QMessageBox.warning(self, "路径错误", "接口路径必须以单个 / 开头。")
+            return
+
+        body = self.api_body_edit.toPlainText().strip()
+        payload = None
+        if body:
+            try:
+                payload = json.loads(body)
+            except json.JSONDecodeError as exc:
+                QMessageBox.warning(
+                    self,
+                    "JSON 格式错误",
+                    f"第 {exc.lineno} 行第 {exc.colno} 列：{exc.msg}",
+                )
+                return
+
+        endpoint = self.api_endpoint_combo.currentData()
+        catalog_dangerous = (
+            isinstance(endpoint, ApiEndpoint)
+            and endpoint.path == path
+            and endpoint.dangerous
+        )
+        must_confirm = catalog_dangerous or (
+            method == "POST" and self.api_confirm_check.isChecked()
+        )
+        if must_confirm:
+            level = "高风险接口" if catalog_dangerous else "写入接口"
+            answer = QMessageBox.question(
+                self,
+                f"确认{level}",
+                f"即将发送：\n{method} :{port}{path}\n\n"
+                "该请求可能改变机器人状态，是否继续？",
+            )
+            if answer != QMessageBox.Yes:
+                return
+
+        self._api_request_pending = True
+        self.api_send_button.setEnabled(False)
+        self.api_response_edit.setPlainText(
+            f"请求中…\n{method} :{port}{path}"
+        )
+        self._worker.call_api(method, path, payload, port)
+
+    def _on_manual_api_result(
+        self, ok: bool, request_description: str, result: Any
+    ) -> None:
+        self._api_request_pending = False
+        self.api_send_button.setEnabled(self._connected and not self._moving)
+        try:
+            response = json.dumps(result, ensure_ascii=False, indent=2, default=str)
+        except (TypeError, ValueError):
+            response = str(result)
+        status = "成功" if ok else "失败或控制器拒绝"
+        self.api_response_edit.setPlainText(
+            f"{status}\n{request_description}\n\n{response}"
+        )
+
     def _connect(self) -> None:
         if self._worker.isRunning():
             return
@@ -411,6 +602,7 @@ class MainWindow(QMainWindow):
         else:
             self.connection_label.setText(detail)
             self._moving = False
+            self._api_request_pending = False
             self._set_connected_ui(False)
 
     def _on_worker_thread_finished(self) -> None:
@@ -491,6 +683,9 @@ class MainWindow(QMainWindow):
         self.stop_button.setEnabled(connected and self._moving)
         self.emergency_button.setEnabled(connected)
         self.release_button.setEnabled(connected)
+        self.api_send_button.setEnabled(
+            connected and not self._moving and not self._api_request_pending
+        )
         if not connected:
             self.connect_button.setEnabled(not self._worker.isRunning())
             self.address_edit.setEnabled(True)

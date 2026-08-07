@@ -19,6 +19,17 @@ class _FakeClient:
         return {"status": True}
 
 
+class _FakeManualClient:
+    control_base = "http://127.0.0.1:22000"
+
+    def __init__(self):
+        self.calls = []
+
+    def raw_request(self, method, path, payload):
+        self.calls.append((method, path, payload))
+        return {"status": True, "value": "ok"}
+
+
 class WorkerSequenceTest(unittest.TestCase):
     @staticmethod
     def _pose(pos, yaw_deg):
@@ -101,6 +112,37 @@ class WorkerSequenceTest(unittest.TestCase):
         self.assertIn("第2组 前后来回 回零误差", group)
         self.assertIn("平面=1.0050m", group)
         self.assertIn("偏航=3.00°", group)
+
+    def test_manual_api_runs_on_current_control_client(self):
+        worker = HttpAutoMoveWorker()
+        client = _FakeManualClient()
+        worker._client = client
+        results = []
+        worker.manual_api_result.connect(
+            lambda ok, description, result: results.append((ok, description, result))
+        )
+        worker._execute_manual_api({
+            "method": "POST",
+            "path": "/settings/searchLight",
+            "port": 22000,
+            "payload": {"open": True},
+        })
+        self.assertEqual(
+            client.calls,
+            [("POST", "/settings/searchLight", {"open": True})],
+        )
+        self.assertTrue(results[0][0])
+
+    def test_manual_api_log_redacts_passwords(self):
+        payload = {
+            "ssid": "robot",
+            "passWd": "secret-password",
+            "nested": {"publisherToken": "secret-token"},
+        }
+        redacted = HttpAutoMoveWorker._redact_payload(payload)
+        self.assertEqual(redacted["passWd"], "***")
+        self.assertEqual(redacted["nested"]["publisherToken"], "***")
+        self.assertEqual(payload["passWd"], "secret-password")
 
     def test_rotation_error_and_log_direction_symbol(self):
         worker = HttpAutoMoveWorker()
