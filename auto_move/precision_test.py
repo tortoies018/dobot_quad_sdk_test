@@ -1,6 +1,6 @@
-"""SDK 指令精度自动测试程序入口。
+"""SDK 指令精度测试程序入口。
 
-复用 auto_move 的连接、轨迹、日志和窗口，只默认选择自动精度测试模式。
+复用 auto_move 窗口，默认在“直线行走”页签中开启精度测量。
 """
 
 import sys
@@ -14,10 +14,9 @@ def main():
     app = QApplication(sys.argv)
     app.setApplicationName("Dobot Quad SDK 指令精度测试")
     window = MainWindow()
-    window.setWindowTitle("Dobot Quad SDK 指令精度自动测试")
-    index = window.mode_combo.findData("precision_test")
-    if index >= 0:
-        window.mode_combo.setCurrentIndex(index)
+    window.setWindowTitle("Dobot Quad SDK 指令精度测试")
+    window.command_tabs.setCurrentIndex(0)
+    window.precision_checks[0].setChecked(True)
     window.showMaximized()
     sys.exit(app.exec())
 

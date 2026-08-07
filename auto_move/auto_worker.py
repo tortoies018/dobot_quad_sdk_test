@@ -1,5 +1,5 @@
 """
-自动前后移动工作线程——使用 gRPC 高层 API 驱动机器人往复运动。
+动作 API 测试工作线程——使用 gRPC 高层 API 驱动机器人运动。
 
 线程常驻：连接后轨迹/IMU 采样一直工作，与移动指令独立；
 移动指令通过命令队列逐条下发。
@@ -53,15 +53,23 @@ class AutoMoveWorker(QThread):
         self._measurement_lock = threading.Lock()
         self._measurement_active = False
         self._measurement_yaws = []
-        self.precision_groups = 100
         self.last_result_path = None
         self.result_dir = Path(__file__).resolve().parent / "results"
 
         # 可配置参数（由 GUI 下发）
-        self.mode = "back_and_forth"   # back_and_forth / forward_only / backward_only / square
-        self.control_api = "line_walk"  # line_walk / velocity_sequence
+        self.mode = "line_walk"        # 当前动作 API 对应的执行模式
+        self.control_api = "line_walk"  # 写入日志和精度结果的实际 API 名称
         self.distance = 1.0            # 直线单次移动距离 (m)
         self.side_len = 1.0            # 正方形边长 (m)
+        self.angle = 90.0              # 相对旋转角度 (deg)
+        self.direction = "forward"     # line_walk / rotate 的方向参数
+        self.velocity_vx = 0.3         # velocity_sequence: vx (m/s)
+        self.velocity_vy = 0.0         # velocity_sequence: vy (m/s)
+        self.velocity_vyaw = 0.0       # velocity_sequence: vyaw (rad/s)
+        self.velocity_duration = 2.0   # velocity_sequence: 单个速度段时长 (s)
+        self.velocity_gait = "walk"
+        self.stand_down_after = False
+        self.show_progress = False       # SDK 是否输出命令行进度
         self.repetitions = 3           # 循环次数
         self.infinite = False          # 是否无限循环（直到手动停止）
         self.speed_ratio = 50          # 速度比 [10,100]（运行中可实时修改）
@@ -70,6 +78,16 @@ class AutoMoveWorker(QThread):
         self.settle_time = 0.5         # 移动/转向后姿态稳定等待时间 (秒)
         self.yaw_threshold = 3.0       # 航向矫正阈值 (度)
         self.position_threshold = 0.02  # 到达目标点判定阈值 (m)
+        self.collect_data = False
+        self.auto_return = False
+        self.auto_return_distance = 5.0
+        self._return_origin = None
+        self._return_yaw = 0.0
+        self._data_file = None
+        self._data_writer = None
+        self._data_records = []
+        self._data_run_id = ""
+        self._data_result_index = 0
 
     # ─── 控制接口（主线程调用） ────────────────────
 
@@ -149,16 +167,29 @@ class AutoMoveWorker(QThread):
 
     def _execute_move(self, cmd):
         """执行一条移动指令（采样线程不中断）"""
-        self.mode = cmd.get("mode", "back_and_forth")
-        self.control_api = cmd.get("control_api", "line_walk")
+        self.mode = cmd.get("mode", "line_walk")
+        self.control_api = cmd.get("control_api", self.mode)
         self.distance = cmd.get("distance", 1.0)
         self.side_len = cmd.get("side_len", 1.0)
+        self.angle = float(cmd.get("angle", 90.0))
+        self.direction = str(cmd.get("direction", "forward"))
+        self.velocity_vx = float(cmd.get("vx", 0.3))
+        self.velocity_vy = float(cmd.get("vy", 0.0))
+        self.velocity_vyaw = float(cmd.get("vyaw", 0.0))
+        self.velocity_duration = max(0.1, float(cmd.get("duration", 2.0)))
+        self.velocity_gait = str(cmd.get("gait", "walk"))
+        self.stand_down_after = bool(cmd.get("stand_down_after", False))
+        self.show_progress = bool(cmd.get("show_progress", False))
         self.repetitions = cmd.get("repetitions", 3)
         self.infinite = cmd.get("infinite", False)
         self.speed_ratio = cmd.get("speed_ratio", 50)
         self.linear_velocity = max(0.1, float(cmd.get("linear_velocity", 0.3)))
         self.yaw_velocity = max(0.1, float(cmd.get("yaw_velocity", 0.3)))
         self.settle_time = cmd.get("settle_time", 0.5)
+        self.collect_data = bool(cmd.get("collect_data", False))
+        self.auto_return = bool(cmd.get("auto_return", False))
+        self.auto_return_distance = max(0.1, float(cmd.get("auto_return_distance", 5.0)))
+        self._return_origin = None
 
         try:
             self._robot.set_speed_ratio(self.speed_ratio)
@@ -168,7 +199,7 @@ class AutoMoveWorker(QThread):
 
         if self.control_api == "velocity_sequence":
             try:
-                if self._is_wheel:
+                if self.velocity_gait == "wheel_loco":
                     self._log("API", "wheel_loco(show_progress=False)")
                     self._robot.wheel_loco(show_progress=False)
                 else:
@@ -180,9 +211,7 @@ class AutoMoveWorker(QThread):
                 self._move_running = False
                 return
 
-        if self.mode == "precision_test":
-            self._execute_precision_suite()
-            return
+        self._capture_return_origin()
 
         # 记录本次移动的姿态/偏航基准（3D 显示与航向矫正用）
         try:
@@ -208,7 +237,33 @@ class AutoMoveWorker(QThread):
         start = self._read_pos()
         sx, sy = float(start[0]), float(start[1])
         square_targets = []
-        if self.mode == "square":
+        action_mode = self.mode
+        if self.mode == "line_walk":
+            action_mode = {
+                "forward": "walk_forward", "backward": "walk_backward",
+                "left": "move_left", "right": "move_right",
+            }.get(self.direction, "walk_forward")
+        elif self.mode == "rotate":
+            action_mode = "rotate_left" if self.direction == "left" else "rotate_right"
+
+        if action_mode == "velocity_sequence":
+            body_dx, body_dy = self._velocity_expected_body_displacement(
+                self.velocity_vx,
+                self.velocity_vy,
+                self.velocity_vyaw,
+                self.velocity_duration,
+            )
+            heading = math.radians(self._initial_yaw)
+            world_dx = math.cos(heading) * body_dx - math.sin(heading) * body_dy
+            world_dy = math.sin(heading) * body_dx + math.cos(heading) * body_dy
+            self.ideal_path.emit([[sx, sy, 0.0], [sx + world_dx, sy + world_dy, 0.0]])
+            self._log(
+                "INFO",
+                f"指令轨迹: velocity_sequence，速度段 "
+                f"({self.velocity_vx:.2f}, {self.velocity_vy:.2f}, "
+                f"{self.velocity_vyaw:.2f}, {self.velocity_duration:.2f}s)",
+            )
+        elif action_mode == "square":
             pts = self._ideal_square_points(start, self._initial_yaw, self.side_len)
             square_targets = pts[1:]
             self.ideal_path.emit(pts)
@@ -217,14 +272,33 @@ class AutoMoveWorker(QThread):
                 f"指令轨迹: 正方形，边长 {self.side_len:.2f}m；"
                 "每条边按实时位置转向目标点并计算剩余距离",
             )
+        elif action_mode in (
+            "lateral_back_and_forth", "left_only", "right_only", "move_left", "move_right"
+        ):
+            h = math.radians(self._initial_yaw)
+            left = (-math.sin(h), math.cos(h))
+            sign = -1.0 if action_mode in ("right_only", "move_right") else 1.0
+            ex = sx + sign * self.distance * left[0]
+            ey = sy + sign * self.distance * left[1]
+            pts = [[sx, sy, 0.0], [ex, ey, 0.0]]
+            if action_mode == "lateral_back_and_forth":
+                pts.append([sx, sy, 0.0])
+            self.ideal_path.emit(pts)
+            self._log("INFO", f"指令轨迹: {self.control_api}，距离 {self.distance:.2f}m")
+        elif action_mode in (
+            "rotation_back_and_forth", "rotate_left_only", "rotate_right_only",
+            "rotate_left", "rotate_right",
+        ):
+            self.ideal_path.emit([[sx, sy, 0.0]])
+            self._log("INFO", f"指令轨迹: {self.control_api}，角度 {self.angle:.2f}°")
         else:
             h = math.radians(self._initial_yaw)
             u = (math.cos(h), math.sin(h))
-            if self.mode == "backward_only":
+            if action_mode in ("backward_only", "walk_backward"):
                 ex, ey = sx - self.distance * u[0], sy - self.distance * u[1]
-            else:   # forward_only / back_and_forth
+            else:   # walk_forward / forward_only / back_and_forth
                 ex, ey = sx + self.distance * u[0], sy + self.distance * u[1]
-            if self.mode == "back_and_forth":
+            if action_mode == "back_and_forth":
                 pts = [[sx, sy, 0.0], [ex, ey, 0.0], [sx, sy, 0.0]]
             else:
                 pts = [[sx, sy, 0.0], [ex, ey, 0.0]]
@@ -235,11 +309,22 @@ class AutoMoveWorker(QThread):
                 f"距离 {self.distance:.2f}m",
             )
 
-        do_forward = self.mode in ("back_and_forth", "forward_only")
-        do_backward = self.mode in ("back_and_forth", "backward_only")
-        do_square = self.mode == "square"
+        do_forward = action_mode in ("back_and_forth", "forward_only", "walk_forward")
+        do_backward = action_mode in ("back_and_forth", "backward_only", "walk_backward")
+        do_square = action_mode == "square"
+        do_velocity = action_mode == "velocity_sequence"
+        do_left = action_mode in ("lateral_back_and_forth", "left_only", "move_left")
+        do_right = action_mode in ("lateral_back_and_forth", "right_only", "move_right")
+        do_rotate_left = action_mode in (
+            "rotation_back_and_forth", "rotate_left_only", "rotate_left"
+        )
+        do_rotate_right = action_mode in (
+            "rotation_back_and_forth", "rotate_right_only", "rotate_right"
+        )
 
         try:
+            if self.collect_data:
+                self._start_regular_data_collection()
             cycle = 0
             while self._running and self._move_running:
                 cycle += 1
@@ -251,19 +336,94 @@ class AutoMoveWorker(QThread):
                 if do_square:
                     self.progress.emit(cycle, total, f"正方形 边长{self.side_len:.2f}m")
                     self._run_square(cycle, total, square_targets)
+                elif do_velocity:
+                    stage = (
+                        f"速度序列 vx={self.velocity_vx:.2f} vy={self.velocity_vy:.2f} "
+                        f"vyaw={self.velocity_vyaw:.2f} duration={self.velocity_duration:.1f}s"
+                    )
+                    self.progress.emit(cycle, total, stage)
+                    body_dx, body_dy = self._velocity_expected_body_displacement(
+                        self.velocity_vx,
+                        self.velocity_vy,
+                        self.velocity_vyaw,
+                        self.velocity_duration,
+                    )
+                    self._execute_optional_record(
+                        "速度序列",
+                        "velocity",
+                        "速度序列",
+                        self.velocity_duration,
+                        "s",
+                        cycle,
+                        self._run_velocity_sequence,
+                        measurement_spec={
+                            "expected_body_dx_m": body_dx,
+                            "expected_body_dy_m": body_dy,
+                            "expected_yaw_deg": math.degrees(
+                                self.velocity_vyaw * self.velocity_duration
+                            ),
+                        },
+                    )
+                    if not self._move_running:
+                        break
                 elif do_forward:
                     self.progress.emit(cycle, total, f"前进 {self.distance:.2f}m")
-                    self._move("forward", self.distance)
+                    self._execute_optional_record(
+                        "前后移动", "forward", "前进", self.distance, "m", cycle,
+                        lambda: self._move("forward", self.distance),
+                    )
                     if not self._move_running:
                         break
                     self._correct_heading_once()   # 移动完整距离后矫正一次航向
 
                 if do_backward:
                     self.progress.emit(cycle, total, f"后退 {self.distance:.2f}m")
-                    self._move("backward", self.distance)
+                    self._execute_optional_record(
+                        "前后移动", "backward", "后退", self.distance, "m", cycle,
+                        lambda: self._move("backward", self.distance),
+                    )
                     if not self._move_running:
                         break
                     self._correct_heading_once()   # 移动完整距离后矫正一次航向
+
+                if do_left:
+                    self.progress.emit(cycle, total, f"左平移 {self.distance:.2f}m")
+                    self._execute_optional_record(
+                        "左右平移", "left", "左平移", self.distance, "m", cycle,
+                        lambda: self._move_lateral("left", self.distance),
+                    )
+                    if not self._move_running:
+                        break
+
+                if do_right:
+                    self.progress.emit(cycle, total, f"右平移 {self.distance:.2f}m")
+                    self._execute_optional_record(
+                        "左右平移", "right", "右平移", self.distance, "m", cycle,
+                        lambda: self._move_lateral("right", self.distance),
+                    )
+                    if not self._move_running:
+                        break
+
+                if do_rotate_left:
+                    self.progress.emit(cycle, total, f"左旋转 {self.angle:.1f}°")
+                    self._execute_optional_record(
+                        "左右旋转", "left", "左旋转", self.angle, "deg", cycle,
+                        lambda: self._rotate_relative("left", self.angle),
+                    )
+                    if not self._move_running:
+                        break
+
+                if do_rotate_right:
+                    self.progress.emit(cycle, total, f"右旋转 {self.angle:.1f}°")
+                    self._execute_optional_record(
+                        "左右旋转", "right", "右旋转", self.angle, "deg", cycle,
+                        lambda: self._rotate_relative("right", self.angle),
+                    )
+                    if not self._move_running:
+                        break
+
+                if self._running and self._move_running:
+                    self._check_auto_return(f"第 {cycle} 次循环")
 
                 self._log("INFO", f"第 {cycle} 次循环完成")
 
@@ -275,37 +435,93 @@ class AutoMoveWorker(QThread):
             self._log("ERROR", f"执行出错: {e}")
             self.finished_ok.emit(f"出错: {e}")
         finally:
+            self._finish_regular_data_collection()
             self._clear_command_preview()
             self._move_running = False   # 移动指令结束
 
-    # ─── SDK 指令精度自动测试 ─────────────────────
+    # ─── 动作 API 可选精度数据采集 ─────────────────
 
-    @staticmethod
-    def _precision_case_pairs():
-        """按相反方向配对，保证每组测试后尽量回到开始位置/朝向。"""
-        pairs = []
-        for distance in (1.0, 2.0, 3.0):
-            pairs.append((
-                "前后移动",
-                (("forward", "前进", distance, "m"), ("backward", "后退", distance, "m")),
-            ))
-        for distance in (1.0, 2.0, 3.0):
-            pairs.append((
-                "左右平移",
-                (("left", "左平移", distance, "m"), ("right", "右平移", distance, "m")),
-            ))
-        for angle in (90.0, 180.0, 360.0):
-            pairs.append((
-                "左右旋转",
-                (("left", "左旋转", angle, "deg"), ("right", "右旋转", angle, "deg")),
-            ))
-        return pairs
+    def _start_regular_data_collection(self):
+        self._data_run_id = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+        result_dir = Path(self.result_dir)
+        result_dir.mkdir(parents=True, exist_ok=True)
+        result_path = result_dir / f"precision_{self.mode}_{self._data_run_id}.csv"
+        self.last_result_path = str(result_path)
+        self._data_file = result_path.open("w", newline="", encoding="utf-8-sig")
+        self._data_writer = csv.DictWriter(
+            self._data_file, fieldnames=self._precision_fields())
+        self._data_writer.writeheader()
+        self._data_file.flush()
+        self._data_records = []
+        self._data_result_index = 0
+        self._log("INFO", f"当前测试的精度功能已开启: {result_path}")
+
+    def _execute_optional_record(
+        self,
+        pair_type,
+        direction,
+        direction_label,
+        target,
+        unit,
+        group_index,
+        command_callable,
+        measurement_spec=None,
+    ):
+        if not self.collect_data:
+            command_callable()
+            return
+        self._data_result_index += 1
+        row, command_error = self._measure_precision_command(
+            run_id=self._data_run_id,
+            result_index=self._data_result_index,
+            speed_ratio=self.speed_ratio,
+            pair_type=pair_type,
+            direction=direction,
+            direction_label=direction_label,
+            target=target,
+            unit=unit,
+            group_index=group_index,
+            command_callable=command_callable,
+            measurement_spec=measurement_spec,
+        )
+        self._data_writer.writerow(row)
+        self._data_file.flush()
+        os.fsync(self._data_file.fileno())
+        self._data_records.append(row)
+        self._log_precision_result(row, self._data_result_index, 0)
+        if command_error is not None:
+            raise command_error
+
+    def _finish_regular_data_collection(self):
+        if self._data_file is None:
+            return
+        result_path = Path(self.last_result_path)
+        summary_path = result_path.with_name(f"{result_path.stem}_summary.csv")
+        try:
+            self._data_file.flush()
+            self._data_file.close()
+            self._write_precision_summary(self._data_records, summary_path)
+            self._log(
+                "INFO",
+                f"精度测试数据采集完成: {len(self._data_records)} 条，"
+                f"结果 {result_path}，汇总 {summary_path}",
+            )
+        except Exception as exc:
+            self._log("ERROR", f"结束 IMU 数据采集失败: {exc}")
+        finally:
+            self._data_file = None
+            self._data_writer = None
+            self._data_records = []
+
+    # ─── 精度数据记录与汇总 ───────────────────────
 
     @staticmethod
     def _precision_fields():
         return [
             "run_id", "timestamp", "result_index", "speed_ratio", "control_api",
             "pair_type", "direction", "target_value", "target_unit", "group_index",
+            "command_direction", "vx_m_s", "vy_m_s", "vyaw_rad_s",
+            "command_duration_s", "gait", "stand_down_after", "show_progress",
             "status", "error", "duration_s", "imu_sample_count",
             "start_x_m", "start_y_m", "start_z_m", "start_yaw_deg",
             "end_x_m", "end_y_m", "end_z_m", "end_yaw_deg",
@@ -316,97 +532,19 @@ class AutoMoveWorker(QThread):
             "angle_error_deg", "abs_angle_error_deg", "position_drift_m",
         ]
 
-    def _execute_precision_suite(self):
-        """自动执行规范中的全部测试，并在每条指令后立即持久化 IMU 误差。"""
-        run_id = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-        result_dir = Path(self.result_dir)
-        result_dir.mkdir(parents=True, exist_ok=True)
-        result_path = result_dir / f"sdk_precision_{run_id}.csv"
-        summary_path = result_dir / f"sdk_precision_{run_id}_summary.csv"
-        self.last_result_path = str(result_path)
-
-        cases = self._precision_case_pairs()
-        total = 2 * len(cases) * self.precision_groups * 2
-        completed = 0
-        records = []
-        failure = None
-        self._log(
-            "INFO",
-            f"SDK 指令精度测试开始: 每个单项 {self.precision_groups} 组，"
-            f"共 {total} 条结果，文件 {result_path}",
-        )
-
-        try:
-            with result_path.open("w", newline="", encoding="utf-8-sig") as file_obj:
-                writer = csv.DictWriter(file_obj, fieldnames=self._precision_fields())
-                writer.writeheader()
-                file_obj.flush()
-
-                for speed_ratio in (100, 50):
-                    if not (self._running and self._move_running):
-                        break
-                    self.speed_ratio = speed_ratio
-                    self._robot.set_speed_ratio(speed_ratio)
-                    self._log("API", f"set_speed_ratio(ratio={speed_ratio})")
-
-                    for pair_type, commands in cases:
-                        if not (self._running and self._move_running):
-                            break
-                        for group_index in range(1, self.precision_groups + 1):
-                            if not (self._running and self._move_running):
-                                break
-                            for direction, direction_label, target, unit in commands:
-                                if not (self._running and self._move_running):
-                                    break
-                                result_index = completed + 1
-                                stage = (
-                                    f"精度测试 {speed_ratio}% {direction_label}{target:g}{unit} "
-                                    f"第{group_index}/{self.precision_groups}组"
-                                )
-                                self.progress.emit(result_index, total, stage)
-                                row, command_error = self._measure_precision_command(
-                                    run_id=run_id,
-                                    result_index=result_index,
-                                    speed_ratio=speed_ratio,
-                                    pair_type=pair_type,
-                                    direction=direction,
-                                    direction_label=direction_label,
-                                    target=target,
-                                    unit=unit,
-                                    group_index=group_index,
-                                )
-                                writer.writerow(row)
-                                file_obj.flush()
-                                os.fsync(file_obj.fileno())
-                                records.append(row)
-                                completed += 1
-                                self._log_precision_result(row, completed, total)
-                                if command_error is not None:
-                                    failure = command_error
-                                    raise command_error
-        except Exception as exc:
-            failure = failure or exc
-            self._log("ERROR", f"精度测试中止: {exc}")
-        finally:
-            try:
-                self._write_precision_summary(records, summary_path)
-            except Exception as exc:
-                self._log("ERROR", f"写入汇总文件失败: {exc}")
-            self._clear_command_preview()
-            self._move_running = False
-
-        if failure is not None:
-            self.finished_ok.emit(
-                f"出错: 已记录 {completed}/{total} 条，结果 {result_path}，原因: {failure}"
-            )
-        elif completed < total:
-            self.finished_ok.emit(
-                f"已手动停止，已记录 {completed}/{total} 条，结果 {result_path}"
-            )
-        else:
-            self.finished_ok.emit(
-                f"完成精度测试，共 {completed} 条，结果 {result_path}，汇总 {summary_path}"
-            )
+    def _precision_command_metadata(self):
+        """返回可还原当前实际 API 调用的参数。"""
+        is_velocity = self.control_api == "velocity_sequence"
+        return {
+            "command_direction": self.direction if not is_velocity else "",
+            "vx_m_s": self.velocity_vx if is_velocity else "",
+            "vy_m_s": self.velocity_vy if is_velocity else "",
+            "vyaw_rad_s": self.velocity_vyaw if is_velocity else "",
+            "command_duration_s": self.velocity_duration if is_velocity else "",
+            "gait": self.velocity_gait if is_velocity else "",
+            "stand_down_after": self.stand_down_after if is_velocity else "",
+            "show_progress": self.show_progress,
+        }
 
     def _measure_precision_command(
         self,
@@ -419,6 +557,8 @@ class AutoMoveWorker(QThread):
         target,
         unit,
         group_index,
+        command_callable=None,
+        measurement_spec=None,
     ):
         """执行一条测试指令，返回可立即写入 CSV 的结果和可能的异常。"""
         started = time.monotonic()
@@ -427,7 +567,14 @@ class AutoMoveWorker(QThread):
         except Exception as exc:
             before = {"x": 0.0, "y": 0.0, "z": 0.0, "yaw_rad": 0.0}
             row = self._calculate_precision_result(
-                before, before, [0.0], pair_type, direction, float(target))
+                before,
+                before,
+                [0.0],
+                pair_type,
+                direction,
+                float(target),
+                measurement_spec=measurement_spec,
+            )
             row.update({
                 "run_id": run_id,
                 "timestamp": datetime.now().isoformat(timespec="milliseconds"),
@@ -439,6 +586,7 @@ class AutoMoveWorker(QThread):
                 "target_value": target,
                 "target_unit": unit,
                 "group_index": group_index,
+                **self._precision_command_metadata(),
                 "status": "error",
                 "error": f"读取指令前 IMU 失败: {exc}",
                 "duration_s": round(time.monotonic() - started, 6),
@@ -452,7 +600,9 @@ class AutoMoveWorker(QThread):
 
         command_error = None
         try:
-            if pair_type == "前后移动":
+            if command_callable is not None:
+                command_callable()
+            elif pair_type == "前后移动":
                 self._move(direction, target)
             elif pair_type == "左右平移":
                 self._move_lateral(direction, target)
@@ -478,6 +628,7 @@ class AutoMoveWorker(QThread):
             pair_type=pair_type,
             direction=direction,
             target=float(target),
+            measurement_spec=measurement_spec,
         )
         row.update({
             "run_id": run_id,
@@ -490,6 +641,7 @@ class AutoMoveWorker(QThread):
             "target_value": target,
             "target_unit": unit,
             "group_index": group_index,
+            **self._precision_command_metadata(),
             "status": ("error" if command_error else
                        "stopped" if not self._move_running else "success"),
             "error": str(command_error) if command_error else "",
@@ -511,7 +663,16 @@ class AutoMoveWorker(QThread):
         return {"x": xyz[0], "y": xyz[1], "z": xyz[2], "yaw_rad": yaw}
 
     @classmethod
-    def _calculate_precision_result(cls, before, after, yaw_samples, pair_type, direction, target):
+    def _calculate_precision_result(
+        cls,
+        before,
+        after,
+        yaw_samples,
+        pair_type,
+        direction,
+        target,
+        measurement_spec=None,
+    ):
         dx = after["x"] - before["x"]
         dy = after["y"] - before["y"]
         dz = after["z"] - before["z"]
@@ -540,6 +701,44 @@ class AutoMoveWorker(QThread):
             "angle_error_deg": "", "abs_angle_error_deg": "",
             "position_drift_m": round(math.hypot(dx, dy), 6),
         }
+
+        if measurement_spec is not None:
+            expected_body_dx = float(measurement_spec.get("expected_body_dx_m", 0.0))
+            expected_body_dy = float(measurement_spec.get("expected_body_dy_m", 0.0))
+            expected_distance = math.hypot(expected_body_dx, expected_body_dy)
+            if expected_distance > 1e-9:
+                body_unit_x = expected_body_dx / expected_distance
+                body_unit_y = expected_body_dy / expected_distance
+                desired = (
+                    math.cos(start_yaw) * body_unit_x - math.sin(start_yaw) * body_unit_y,
+                    math.sin(start_yaw) * body_unit_x + math.cos(start_yaw) * body_unit_y,
+                )
+                actual = dx * desired[0] + dy * desired[1]
+                lateral = dx * (-desired[1]) + dy * desired[0]
+                error = actual - expected_distance
+                result.update({
+                    "expected_distance_m": round(expected_distance, 6),
+                    "actual_distance_m": round(actual, 6),
+                    "distance_error_m": round(error, 6),
+                    "abs_distance_error_m": round(abs(error), 6),
+                    "lateral_error_m": round(lateral, 6),
+                    "vertical_error_m": round(dz, 6),
+                })
+
+            expected_yaw_deg = float(measurement_spec.get("expected_yaw_deg", 0.0))
+            if abs(expected_yaw_deg) > 1e-9:
+                angle_error = yaw_change_deg - expected_yaw_deg
+                result.update({
+                    "expected_angle_deg": round(expected_yaw_deg, 6),
+                    "actual_angle_deg": round(yaw_change_deg, 6),
+                    "angle_error_deg": round(angle_error, 6),
+                    "abs_angle_error_deg": round(abs(angle_error), 6),
+                })
+            elif expected_distance > 1e-9:
+                result["yaw_drift_deg"] = round(
+                    cls._normalize_angle(math.degrees(end_yaw - start_yaw)), 6
+                )
+            return result
 
         if pair_type in ("前后移动", "左右平移"):
             forward = (math.cos(start_yaw), math.sin(start_yaw))
@@ -575,7 +774,20 @@ class AutoMoveWorker(QThread):
         return result
 
     def _log_precision_result(self, row, completed, total):
-        if row["pair_type"] == "左右旋转":
+        if row["pair_type"] == "速度序列":
+            parts = []
+            if row["expected_distance_m"] != "":
+                parts.append(
+                    f"位移目标={row['expected_distance_m']}m "
+                    f"实际={row['actual_distance_m']}m 误差={row['distance_error_m']}m"
+                )
+            if row["expected_angle_deg"] != "":
+                parts.append(
+                    f"转角目标={row['expected_angle_deg']}° "
+                    f"实际={row['actual_angle_deg']}° 误差={row['angle_error_deg']}°"
+                )
+            detail = "；".join(parts) if parts else "零速度指令"
+        elif row["pair_type"] == "左右旋转":
             detail = (
                 f"目标={row['expected_angle_deg']}° 实际={row['actual_angle_deg']}° "
                 f"误差={row['angle_error_deg']}° 位移漂移={row['position_drift_m']}m"
@@ -588,40 +800,49 @@ class AutoMoveWorker(QThread):
             )
         self._log(
             "RESULT",
-            f"[{completed}/{total}] {row['speed_ratio']}% {row['direction']} "
+            f"[{'%s/%s' % (completed, total) if total else completed}] "
+            f"{row['speed_ratio']}% {row['direction']} "
             f"第{row['group_index']}组 {detail} 状态={row['status']}",
         )
 
     @staticmethod
     def _write_precision_summary(records, summary_path):
+        group_fields = [
+            "speed_ratio", "control_api", "pair_type", "direction", "target_value",
+            "target_unit", "command_direction", "vx_m_s", "vy_m_s", "vyaw_rad_s",
+            "command_duration_s", "gait", "stand_down_after", "show_progress",
+        ]
         grouped = {}
         for row in records:
-            key = (
-                row["speed_ratio"], row["control_api"], row["pair_type"],
-                row["direction"], row["target_value"], row["target_unit"],
-            )
+            key = tuple(row[field] for field in group_fields)
             grouped.setdefault(key, []).append(row)
-        fields = [
-            "speed_ratio", "control_api", "pair_type", "direction", "target_value",
-            "target_unit", "record_count", "success_count", "error_count", "error_metric",
+        fields = group_fields + [
+            "record_count", "success_count", "error_count", "error_metric",
             "mean_error", "mean_abs_error", "std_error", "max_abs_error",
         ]
         with summary_path.open("w", newline="", encoding="utf-8-sig") as file_obj:
             writer = csv.DictWriter(file_obj, fieldnames=fields)
             writer.writeheader()
             for key, rows in grouped.items():
-                metric = "angle_error_deg" if key[2] == "左右旋转" else "distance_error_m"
-                values = [float(row[metric]) for row in rows if row["status"] == "success"]
-                writer.writerow({
-                    "speed_ratio": key[0], "control_api": key[1], "pair_type": key[2],
-                    "direction": key[3], "target_value": key[4], "target_unit": key[5],
-                    "record_count": len(rows), "success_count": len(values),
-                    "error_count": len(rows) - len(values), "error_metric": metric,
-                    "mean_error": round(statistics.mean(values), 6) if values else "",
-                    "mean_abs_error": round(statistics.mean(abs(v) for v in values), 6) if values else "",
-                    "std_error": round(statistics.pstdev(values), 6) if values else "",
-                    "max_abs_error": round(max(abs(v) for v in values), 6) if values else "",
-                })
+                metrics = []
+                for metric in ("distance_error_m", "angle_error_deg"):
+                    if any(row[metric] != "" for row in rows):
+                        metrics.append(metric)
+                for metric in metrics:
+                    values = [
+                        float(row[metric])
+                        for row in rows
+                        if row["status"] == "success" and row[metric] != ""
+                    ]
+                    writer.writerow({
+                        **dict(zip(group_fields, key)),
+                        "record_count": len(rows), "success_count": len(values),
+                        "error_count": len(rows) - len(values), "error_metric": metric,
+                        "mean_error": round(statistics.mean(values), 6) if values else "",
+                        "mean_abs_error": round(statistics.mean(abs(v) for v in values), 6) if values else "",
+                        "std_error": round(statistics.pstdev(values), 6) if values else "",
+                        "max_abs_error": round(max(abs(v) for v in values), 6) if values else "",
+                    })
 
     # ─── 移动 ─────────────────────────────────────
 
@@ -635,7 +856,20 @@ class AutoMoveWorker(QThread):
                 remaining = max(0.0, float(distance))
                 while remaining > 1e-6 and self._running and self._move_running:
                     chunk = min(remaining, 3.0)
-                    if direction == "forward":
+                    if self.control_api == "line_walk":
+                        direction_code = 0 if direction == "forward" else 1
+                        self._log(
+                            "API",
+                            f"line_walk(direction={direction_code}, distance={chunk:.2f}m, "
+                            f"speed_ratio={self.speed_ratio}, show_progress={self.show_progress})",
+                        )
+                        self._robot.line_walk(
+                            direction_code,
+                            chunk,
+                            self.speed_ratio,
+                            show_progress=self.show_progress,
+                        )
+                    elif direction == "forward":
                         self._log("API", f"walk_forward(distance={chunk:.2f}m, speed_ratio={self.speed_ratio})")
                         self._robot.walk_forward(chunk, self.speed_ratio, show_progress=False)
                     else:
@@ -698,7 +932,20 @@ class AutoMoveWorker(QThread):
                 remaining = max(0.0, float(distance))
                 while remaining > 1e-6 and self._running and self._move_running:
                     chunk = min(remaining, 3.0)
-                    if direction == "left":
+                    if self.control_api == "line_walk":
+                        direction_code = 2 if direction == "left" else 3
+                        self._log(
+                            "API",
+                            f"line_walk(direction={direction_code}, distance={chunk:.2f}m, "
+                            f"speed_ratio={self.speed_ratio}, show_progress={self.show_progress})",
+                        )
+                        self._robot.line_walk(
+                            direction_code,
+                            chunk,
+                            self.speed_ratio,
+                            show_progress=self.show_progress,
+                        )
+                    elif direction == "left":
                         self._log("API", f"move_left(distance={chunk:.2f}m, speed_ratio={self.speed_ratio})")
                         self._robot.move_left(chunk, self.speed_ratio, show_progress=False)
                     else:
@@ -733,6 +980,13 @@ class AutoMoveWorker(QThread):
                     stand_down_after=False,
                     show_progress=False,
                 )
+            elif self.control_api == "rotate":
+                self._log(
+                    "API",
+                    f"rotate(direction='{direction}', angle={angle:.2f}°, "
+                    f"show_progress={self.show_progress})",
+                )
+                self._robot.rotate(direction, angle, show_progress=self.show_progress)
             elif direction == "left":
                 self._log("API", f"rotate_left(angle={angle:.2f}°)")
                 self._robot.rotate_left(angle, show_progress=False)
@@ -744,6 +998,52 @@ class AutoMoveWorker(QThread):
             raise
         time.sleep(self.settle_time)
         self._emit_pos()
+
+    def _run_velocity_sequence(self):
+        """按界面参数直接执行一段 velocity_sequence。"""
+        try:
+            steps = self._velocity_steps(
+                vx=self.velocity_vx,
+                vy=self.velocity_vy,
+                vyaw=self.velocity_vyaw,
+                duration=self.velocity_duration,
+            )
+            self._log(
+                "API",
+                f"velocity_sequence(vel_seq=[vx={self.velocity_vx:.2f}, "
+                f"vy={self.velocity_vy:.2f}, vyaw={self.velocity_vyaw:.2f}, "
+                f"duration={self.velocity_duration:.3f}s; stop], "
+                f"gait='{self.velocity_gait}', speed_ratio={self.speed_ratio}, "
+                f"stand_down_after={self.stand_down_after}, "
+                f"show_progress={self.show_progress})",
+            )
+            self._robot.velocity_sequence(
+                steps,
+                gait=self.velocity_gait,
+                speed_ratio=self.speed_ratio,
+                stand_down_after=self.stand_down_after,
+                show_progress=self.show_progress,
+            )
+        except Exception as exc:
+            self._log("ERROR", f"速度序列执行失败: {exc}")
+            raise
+        time.sleep(self.settle_time)
+        self._emit_pos()
+
+    @staticmethod
+    def _velocity_expected_body_displacement(vx, vy, vyaw, duration):
+        """积分恒定机身速度，得到速度段结束时的期望机身坐标位移。"""
+        vx = float(vx)
+        vy = float(vy)
+        vyaw = float(vyaw)
+        duration = max(0.0, float(duration))
+        angle = vyaw * duration
+        if abs(vyaw) <= 1e-9:
+            return vx * duration, vy * duration
+        return (
+            (vx * math.sin(angle) + vy * (math.cos(angle) - 1.0)) / vyaw,
+            (vx * (1.0 - math.cos(angle)) + vy * math.sin(angle)) / vyaw,
+        )
 
     @staticmethod
     def _velocity_steps(vx, vyaw, duration, vy=0.0):
@@ -797,6 +1097,92 @@ class AutoMoveWorker(QThread):
         self._active_target = None
         self._active_phase = ""
         self.command_preview.emit({})
+
+    # ─── 自动回中 ──────────────────────────────────
+
+    def _capture_return_origin(self):
+        """保存本次任务的起点与朝向，作为自动回中的固定目标。"""
+        self._return_origin = None
+        if not self.auto_return:
+            return
+        try:
+            pose = self._read_imu_pose()
+            self._return_origin = [pose["x"], pose["y"], pose["z"]]
+            self._return_yaw = math.degrees(pose["yaw_rad"])
+            self._log(
+                "INFO",
+                f"自动回中已启用: 起点({pose['x']:.3f}, {pose['y']:.3f})，"
+                f"初始朝向 {self._return_yaw:.2f}°，触发距离 > {self.auto_return_distance:.2f}m",
+            )
+        except Exception as exc:
+            self._log("ERROR", f"读取自动回中起点失败，本次任务不执行自动回中: {exc}")
+
+    def _check_auto_return(self, context=""):
+        """超过安全半径时返回任务起点；返航不计入指令误差采集。"""
+        if not self.auto_return or self._return_origin is None:
+            return False
+        if not (self._running and self._move_running):
+            return False
+
+        current = self._read_pos()
+        origin = self._return_origin
+        distance = math.hypot(
+            float(origin[0]) - float(current[0]),
+            float(origin[1]) - float(current[1]),
+        )
+        if distance <= self.auto_return_distance:
+            return False
+
+        prefix = f"{context}: " if context else ""
+        self._log(
+            "WARN",
+            f"{prefix}离任务起点 {distance:.3f}m，超过 {self.auto_return_distance:.3f}m，"
+            "开始自动回中",
+        )
+
+        try:
+            # 最多追踪目标点两次：第一次完成主要返航，第二次补偿运动误差。
+            for attempt in range(1, 3):
+                if not (self._running and self._move_running):
+                    return False
+                current = self._read_pos()
+                dx = float(origin[0]) - float(current[0])
+                dy = float(origin[1]) - float(current[1])
+                remaining = math.hypot(dx, dy)
+                if remaining <= max(self.position_threshold, 0.05):
+                    break
+
+                target_yaw = math.degrees(math.atan2(dy, dx))
+                self._set_active_command(origin, target_yaw, "turn", -attempt)
+                self._turn_to_heading(target_yaw, f"自动回中第{attempt}次转向")
+                if not (self._running and self._move_running):
+                    return False
+
+                # 转向后重新读取位置，确保移动的是到起点的实时剩余距离。
+                current = self._read_pos()
+                remaining = math.hypot(
+                    float(origin[0]) - float(current[0]),
+                    float(origin[1]) - float(current[1]),
+                )
+                if remaining > max(self.position_threshold, 0.05):
+                    self._set_active_command(origin, target_yaw, "move", -attempt)
+                    self._log("INFO", f"自动回中第{attempt}次移动: 剩余 {remaining:.3f}m")
+                    self._move("forward", remaining)
+
+            if not (self._running and self._move_running):
+                return False
+            current = self._read_pos()
+            self._set_active_command(current, self._return_yaw, "turn", 0)
+            self._turn_to_heading(self._return_yaw, "自动回中恢复初始朝向")
+            final = self._read_pos()
+            residual = math.hypot(
+                float(origin[0]) - float(final[0]),
+                float(origin[1]) - float(final[1]),
+            )
+            self._log("INFO", f"自动回中完成: 距任务起点 {residual:.3f}m")
+            return True
+        finally:
+            self._clear_command_preview()
 
     def _correct_heading_once(self):
         """移动完一段完整距离后，按当前偏航误差做一次转向矫正
@@ -899,7 +1285,11 @@ class AutoMoveWorker(QThread):
             if remaining > self.position_threshold:
                 self._set_active_command(target, target_yaw, "move", i + 1)
                 self._log("INFO", f"移动到目标点 {i + 1}: 剩余距离 {remaining:.3f}m")
-                self._move("forward", remaining)
+                self._execute_optional_record(
+                    "前后移动", "forward", f"正方形第{i + 1}边",
+                    remaining, "m", cycle,
+                    lambda distance=remaining: self._move("forward", distance),
+                )
 
         # 回到起点后恢复初始朝向，下一循环仍追踪同一组世界坐标顶点。
         if self._running and self._move_running:

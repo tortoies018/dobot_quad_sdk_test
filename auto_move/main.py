@@ -1,6 +1,6 @@
 """
-自动前后移动控制程序——设置移动距离、循环次数等参数，
-驱动机器人往复运动。
+自动移动控制程序——每个页签对应一个 SDK 动作 API，
+页签内设置该 API 的参数并选择是否记录精度数据。
 """
 
 import sys
@@ -11,8 +11,8 @@ from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QGroupBox, QPushButton, QLabel, QTextEdit, QStatusBar,
     QFormLayout, QSpinBox, QDoubleSpinBox, QCheckBox, QComboBox,
-    QProgressBar, QSlider, QLineEdit,
-    QSplitter,
+    QProgressBar, QLineEdit,
+    QSplitter, QTabWidget,
 )
 
 from auto_worker import AutoMoveWorker
@@ -20,11 +20,11 @@ from trajectory_plot import TrajectoryPlot3D
 
 
 class MainWindow(QMainWindow):
-    """自动前后移动主窗口"""
+    """按动作 API 组织的自动移动与精度测试主窗口"""
 
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Dobot Quad 自动前后移动 (3D轨迹)")
+        self.setWindowTitle("Dobot Quad 自动移动与指令测试 (3D轨迹)")
         # 主窗口本身可自由缩放；内部区域由 QSplitter 单独调节。
         self.setMinimumSize(760, 560)
         self.resize(1320, 880)
@@ -63,47 +63,23 @@ class MainWindow(QMainWindow):
         form_conn.addRow(note)
         left_layout.addWidget(grp_conn)
 
-        # ── 移动参数 ──
-        grp = QGroupBox("移动参数")
+        # ── 动作 API 与对应参数 ──
+        grp = QGroupBox("动作 API 测试")
         grp.setStyleSheet(self._grp_style("#4fc3f7"))
         form = QFormLayout(grp)
 
-        self.mode_combo = QComboBox()
-        self.mode_combo.addItem("前后来回", "back_and_forth")
-        self.mode_combo.addItem("仅前进", "forward_only")
-        self.mode_combo.addItem("仅后退", "backward_only")
-        self.mode_combo.addItem("正方形", "square")
-        self.mode_combo.addItem("SDK指令精度测试（自动100组）", "precision_test")
-        self.mode_combo.setStyleSheet(self._input_style())
-        self.mode_combo.currentIndexChanged.connect(self._on_mode_changed)
-        form.addRow("运动模式:", self.mode_combo)
-
-        self.control_api_combo = QComboBox()
-        self.control_api_combo.addItem("line_walk + rotation", "line_walk")
-        self.control_api_combo.addItem("velocity_sequence", "velocity_sequence")
-        self.control_api_combo.setStyleSheet(self._input_style())
-        self.control_api_combo.setToolTip("选择 Dobot Quad SDK 实际使用的运动控制 API")
-        self.control_api_combo.currentIndexChanged.connect(self._on_control_api_changed)
-        form.addRow("控制 API:", self.control_api_combo)
-
-        self.dist_spin = QDoubleSpinBox()
-        self.dist_spin.setRange(0.1, 10.0)  # 距离上限 10 m
-        self.dist_spin.setDecimals(1)
-        self.dist_spin.setValue(1.0)
-        self.dist_spin.setSingleStep(0.1)
-        self.dist_spin.setSuffix(" m")
-        self.dist_spin.setStyleSheet(self._input_style())
-        form.addRow("移动距离:", self.dist_spin)
-
-        self.side_spin = QDoubleSpinBox()
-        self.side_spin.setRange(0.1, 10.0)  # 边长上限 10 m
-        self.side_spin.setDecimals(1)
-        self.side_spin.setValue(1.0)
-        self.side_spin.setSingleStep(0.1)
-        self.side_spin.setSuffix(" m")
-        self.side_spin.setEnabled(False)   # 仅正方形模式启用
-        self.side_spin.setStyleSheet(self._input_style())
-        form.addRow("正方形边长:", self.side_spin)
+        self.command_tabs = QTabWidget()
+        self.command_tabs.setStyleSheet(
+            "QTabWidget::pane { border:1px solid #55585e; background:#303238; }"
+            "QTabBar::tab { background:#3a3d42; color:#d8d8d8; padding:7px 9px; }"
+            "QTabBar::tab:selected { background:#1565c0; color:#fff; }")
+        self.action_configs = []
+        self.precision_checks = []
+        self._add_line_walk_tab("前后移动", "longitudinal")
+        self._add_line_walk_tab("左右移动", "lateral")
+        self._add_rotate_tab()
+        self._add_velocity_sequence_tab()
+        form.addRow(self.command_tabs)
 
         # 循环次数 + 无限循环开关
         rep_row = QHBoxLayout()
@@ -122,53 +98,6 @@ class MainWindow(QMainWindow):
         rep_row.addStretch()
         form.addRow("循环次数:", rep_row)
 
-        self.speed_spin = QSpinBox()
-        self.speed_spin.setRange(10, 100)   # 速度比范围 [10, 100]
-        self.speed_spin.setValue(50)
-        self.speed_spin.setStyleSheet(self._input_style())
-        form.addRow("速度比:", self.speed_spin)
-
-        self.linear_velocity_spin = QDoubleSpinBox()
-        self.linear_velocity_spin.setRange(0.1, 1.5)
-        self.linear_velocity_spin.setDecimals(2)
-        self.linear_velocity_spin.setSingleStep(0.1)
-        self.linear_velocity_spin.setValue(0.3)
-        self.linear_velocity_spin.setSuffix(" m/s")
-        self.linear_velocity_spin.setEnabled(False)
-        self.linear_velocity_spin.setStyleSheet(self._input_style())
-        self.linear_velocity_spin.setToolTip("velocity_sequence 的 vx 绝对值")
-        form.addRow("线速度 vx:", self.linear_velocity_spin)
-
-        self.yaw_velocity_spin = QDoubleSpinBox()
-        self.yaw_velocity_spin.setRange(0.1, 1.5)
-        self.yaw_velocity_spin.setDecimals(2)
-        self.yaw_velocity_spin.setSingleStep(0.1)
-        self.yaw_velocity_spin.setValue(0.3)
-        self.yaw_velocity_spin.setSuffix(" rad/s")
-        self.yaw_velocity_spin.setEnabled(False)
-        self.yaw_velocity_spin.setStyleSheet(self._input_style())
-        self.yaw_velocity_spin.setToolTip("velocity_sequence 的 vyaw 绝对值")
-        form.addRow("角速度 vyaw:", self.yaw_velocity_spin)
-
-        # 速度实时调节滑块
-        speed_row = QHBoxLayout()
-        self.speed_slider = QSlider(Qt.Horizontal)
-        self.speed_slider.setRange(10, 100)
-        self.speed_slider.setValue(50)
-        self.speed_slider.setOrientation(Qt.Horizontal)
-        self.speed_slider.setStyleSheet("""
-            QSlider::groove:horizontal { height:6px; background:#3c3f44; border-radius:3px; }
-            QSlider::handle:horizontal { width:18px; margin:-6px 0; background:#29b6f6;
-                                          border-radius:9px; }
-        """)
-        self.speed_slider.valueChanged.connect(self._on_speed_slider)
-        self.speed_spin.valueChanged.connect(lambda v: self.speed_slider.setValue(v))
-        speed_row.addWidget(self.speed_slider, 1)
-        self.lbl_speed_val = QLabel("50")
-        self.lbl_speed_val.setStyleSheet("color:#29b6f6; font:bold 14px; min-width:40px;")
-        speed_row.addWidget(self.lbl_speed_val)
-        form.addRow("速度(实时):", speed_row)
-
         self.settle_spin = QDoubleSpinBox()
         self.settle_spin.setRange(0.1, 5.0)
         self.settle_spin.setDecimals(1)
@@ -176,6 +105,26 @@ class MainWindow(QMainWindow):
         self.settle_spin.setSuffix(" s")
         self.settle_spin.setStyleSheet(self._input_style())
         form.addRow("稳定等待:", self.settle_spin)
+
+        auto_return_row = QHBoxLayout()
+        self.auto_return_check = QCheckBox("启用")
+        self.auto_return_check.setChecked(True)
+        self.auto_return_check.setStyleSheet("color:#ffcc80; font:12px;")
+        self.auto_return_check.setToolTip(
+            "每组指令完成后检查；超过阈值时自动返回本次任务起点并恢复初始朝向")
+        auto_return_row.addWidget(self.auto_return_check)
+        self.auto_return_distance_spin = QDoubleSpinBox()
+        self.auto_return_distance_spin.setRange(0.5, 100.0)
+        self.auto_return_distance_spin.setDecimals(1)
+        self.auto_return_distance_spin.setSingleStep(0.5)
+        self.auto_return_distance_spin.setValue(5.0)
+        self.auto_return_distance_spin.setSuffix(" m")
+        self.auto_return_distance_spin.setStyleSheet(self._input_style())
+        self.auto_return_distance_spin.setToolTip("机器人离本次任务起点超过此距离后触发回中")
+        self.auto_return_check.toggled.connect(self.auto_return_distance_spin.setEnabled)
+        auto_return_row.addWidget(self.auto_return_distance_spin)
+        auto_return_row.addStretch()
+        form.addRow("自动回中:", auto_return_row)
 
         left_layout.addWidget(grp)
 
@@ -345,7 +294,12 @@ class MainWindow(QMainWindow):
 
         phase = "转向" if command.get("phase") == "turn" else "移动"
         segment = command.get("segment", 0)
-        stage = "恢复初始朝向" if segment == 0 else f"第 {segment}/4 边 {phase}"
+        if segment < 0:
+            stage = f"自动回中 第 {abs(segment)} 次{phase}"
+        elif segment == 0:
+            stage = "恢复初始朝向"
+        else:
+            stage = f"第 {segment}/4 边 {phase}"
         target = command.get("target", [0.0, 0.0, 0.0])
         turn = float(command.get("turn", 0.0))
         direction = "左" if turn > 0 else "右"
@@ -384,6 +338,230 @@ class MainWindow(QMainWindow):
                 f"QPushButton:hover {{ background:{hover}; }} "
                 f"QPushButton:disabled {{ background:#4a4d52; color:#9a9da2; }}")
 
+    @staticmethod
+    def _api_intro(text):
+        """创建可复制的 API 调用说明。"""
+        label = QLabel(text)
+        label.setWordWrap(True)
+        label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        label.setStyleSheet(
+            "color:#bbdefb; background:#25272b; border:1px solid #455a64; "
+            "border-radius:3px; padding:6px; font:11px monospace;"
+        )
+        return label
+
+    def _add_line_walk_tab(self, tab_name, axis):
+        """按前后/左右方向分别添加 line_walk 动作页签。"""
+        tab = QWidget()
+        form = QFormLayout(tab)
+        if axis == "longitudinal":
+            intro = (
+                "前后移动使用 line_walk；direction: 0=前进、1=后退\n"
+                "robot.line_walk(\n"
+                "    direction=0,       # 前进；后退使用 1\n"
+                "    distance=1.0,\n"
+                "    speed_ratio=50,\n"
+                "    show_progress=False,\n"
+                ")"
+            )
+            direction_items = (("前进（0）", "forward"), ("后退（1）", "backward"))
+        else:
+            intro = (
+                "左右移动使用 line_walk；direction: 2=左移、3=右移\n"
+                "robot.line_walk(\n"
+                "    direction=2,       # 左移；右移使用 3\n"
+                "    distance=1.0,\n"
+                "    speed_ratio=50,\n"
+                "    show_progress=False,\n"
+                ")"
+            )
+            direction_items = (("左移（2）", "left"), ("右移（3）", "right"))
+        form.addRow("介绍:", self._api_intro(intro))
+
+        direction_combo = QComboBox()
+        for label, value in direction_items:
+            direction_combo.addItem(label, value)
+        direction_combo.setStyleSheet(self._input_style())
+        form.addRow("direction:", direction_combo)
+
+        distance_spin = QDoubleSpinBox()
+        distance_spin.setRange(0.1, 3.0)
+        distance_spin.setDecimals(1)
+        distance_spin.setValue(1.0)
+        distance_spin.setSingleStep(0.1)
+        distance_spin.setSuffix(" m")
+        distance_spin.setStyleSheet(self._input_style())
+        form.addRow("distance:", distance_spin)
+
+        speed_spin = QSpinBox()
+        speed_spin.setRange(10, 100)
+        speed_spin.setValue(50)
+        speed_spin.setSuffix(" %")
+        speed_spin.setStyleSheet(self._input_style())
+        form.addRow("speed_ratio:", speed_spin)
+
+        show_progress_check = QCheckBox("显示 SDK 命令行进度")
+        show_progress_check.setChecked(False)
+        show_progress_check.setStyleSheet("color:#b0bec5; font:12px;")
+        form.addRow("show_progress:", show_progress_check)
+
+        precision_check = self._add_precision_option(form)
+        self.action_configs.append({
+            "api": "line_walk",
+            "mode": "line_walk",
+            "axis": axis,
+            "direction_combo": direction_combo,
+            "distance_spin": distance_spin,
+            "speed_spin": speed_spin,
+            "show_progress_check": show_progress_check,
+            "precision_check": precision_check,
+        })
+        self.command_tabs.addTab(tab, tab_name)
+
+    def _add_rotate_tab(self):
+        """添加 rotate 动作 API 页签。"""
+        tab = QWidget()
+        form = QFormLayout(tab)
+        form.addRow("介绍:", self._api_intro(
+            "原地旋转 API，direction 可使用 'left' / 'right' 或 0 / 1\n"
+            "robot.rotate(\n"
+            "    direction='left',\n"
+            "    angle=90.0,\n"
+            "    show_progress=False,\n"
+            ")"
+        ))
+
+        direction_combo = QComboBox()
+        direction_combo.addItem("左转（left / 0）", "left")
+        direction_combo.addItem("右转（right / 1）", "right")
+        direction_combo.setStyleSheet(self._input_style())
+        form.addRow("direction:", direction_combo)
+
+        angle_spin = QDoubleSpinBox()
+        angle_spin.setRange(1.0, 360.0)
+        angle_spin.setDecimals(1)
+        angle_spin.setValue(90.0)
+        angle_spin.setSingleStep(5.0)
+        angle_spin.setSuffix(" °")
+        angle_spin.setStyleSheet(self._input_style())
+        form.addRow("angle:", angle_spin)
+
+        show_progress_check = QCheckBox("显示 SDK 命令行进度")
+        show_progress_check.setChecked(False)
+        show_progress_check.setStyleSheet("color:#b0bec5; font:12px;")
+        form.addRow("show_progress:", show_progress_check)
+
+        precision_check = self._add_precision_option(form)
+        self.action_configs.append({
+            "api": "rotate",
+            "mode": "rotate",
+            "direction_combo": direction_combo,
+            "angle_spin": angle_spin,
+            "show_progress_check": show_progress_check,
+            "precision_check": precision_check,
+        })
+        self.command_tabs.addTab(tab, "原地旋转")
+
+    def _add_velocity_sequence_tab(self):
+        """添加 velocity_sequence 动作 API 页签。"""
+        tab = QWidget()
+        form = QFormLayout(tab)
+        form.addRow("介绍:", self._api_intro(
+            "速度序列 API；当前界面生成一个速度段，并自动追加零速度停止段\n"
+            "robot.velocity_sequence(\n"
+            "    vel_seq=[(vx, vy, vyaw, duration), (0, 0, 0, 0.3)],\n"
+            "    gait='walk',\n"
+            "    speed_ratio=50,\n"
+            "    stand_down_after=False,\n"
+            "    show_progress=False,\n"
+            ")"
+        ))
+
+        velocity_spins = {}
+        velocity_specs = (
+            ("vx", " m/s", 0.3),
+            ("vy", " m/s", 0.0),
+            ("vyaw", " rad/s", 0.0),
+        )
+        for name, suffix, default in velocity_specs:
+            spin = QDoubleSpinBox()
+            spin.setRange(-1.5, 1.5)
+            spin.setDecimals(2)
+            spin.setSingleStep(0.1)
+            spin.setValue(default)
+            spin.setSuffix(suffix)
+            spin.setStyleSheet(self._input_style())
+            form.addRow(f"{name}:", spin)
+            velocity_spins[name] = spin
+
+        duration_spin = QDoubleSpinBox()
+        duration_spin.setRange(0.1, 60.0)
+        duration_spin.setDecimals(1)
+        duration_spin.setSingleStep(0.5)
+        duration_spin.setValue(2.0)
+        duration_spin.setSuffix(" s")
+        duration_spin.setStyleSheet(self._input_style())
+        form.addRow("duration:", duration_spin)
+
+        gait_combo = QComboBox()
+        for gait in ("walk", "flying_trot", "rl", "wheel_loco"):
+            gait_combo.addItem(gait, gait)
+        gait_combo.setStyleSheet(self._input_style())
+        form.addRow("gait:", gait_combo)
+
+        speed_spin = QSpinBox()
+        speed_spin.setRange(10, 100)
+        speed_spin.setValue(50)
+        speed_spin.setSuffix(" %")
+        speed_spin.setStyleSheet(self._input_style())
+        form.addRow("speed_ratio:", speed_spin)
+
+        stand_down_check = QCheckBox("执行完成后趴下")
+        stand_down_check.setChecked(False)
+        stand_down_check.setStyleSheet("color:#ffcc80; font:12px;")
+        form.addRow("stand_down_after:", stand_down_check)
+
+        show_progress_check = QCheckBox("显示 SDK 命令行进度")
+        show_progress_check.setChecked(False)
+        show_progress_check.setStyleSheet("color:#b0bec5; font:12px;")
+        form.addRow("show_progress:", show_progress_check)
+
+        precision_check = self._add_precision_option(form)
+        self.action_configs.append({
+            "api": "velocity_sequence",
+            "mode": "velocity_sequence",
+            "vx_spin": velocity_spins["vx"],
+            "vy_spin": velocity_spins["vy"],
+            "vyaw_spin": velocity_spins["vyaw"],
+            "duration_spin": duration_spin,
+            "gait_combo": gait_combo,
+            "speed_spin": speed_spin,
+            "stand_down_check": stand_down_check,
+            "show_progress_check": show_progress_check,
+            "precision_check": precision_check,
+        })
+        self.command_tabs.addTab(tab, "速度序列")
+
+    def _add_precision_option(self, form):
+        """为一个动作 API 添加独立的数据记录开关。"""
+        check = QCheckBox("记录数据（测量精度并生成 CSV 汇总）")
+        check.setStyleSheet("color:#80cbc4; font:12px;")
+        check.setToolTip("记录每次 API 调用前后的 IMU 数据并计算误差")
+        form.addRow("精度测量:", check)
+        self.precision_checks.append(check)
+        return check
+
+    def _current_action_config(self):
+        """返回当前动作 API 页签的配置。"""
+        index = self.command_tabs.currentIndex()
+        if not 0 <= index < len(self.action_configs):
+            raise RuntimeError("未选择有效的动作 API")
+        return self.action_configs[index]
+
+    def _precision_enabled(self):
+        """返回当前测试页签是否开启精度功能。"""
+        return self._current_action_config()["precision_check"].isChecked()
+
     # ─── 控制 ───────────────────────────────────────
 
     def _on_connect(self):
@@ -417,19 +595,46 @@ class MainWindow(QMainWindow):
             self.lbl_status_conn.setText("连接中...")
             self._worker.start()
 
-        # 组装移动指令
+        # 根据当前命令页签组装相匹配的参数。
+        config = self._current_action_config()
+        mode = config["mode"]
+        api_name = config["api"]
+        precision_enabled = self._precision_enabled()
         params = {
-            "mode": self.mode_combo.currentData(),
-            "control_api": self.control_api_combo.currentData(),
-            "distance": self.dist_spin.value(),
-            "side_len": self.side_spin.value(),
+            "mode": mode,
+            "control_api": api_name,
             "repetitions": self.rep_spin.value(),
             "infinite": self.infinite_check.isChecked(),
-            "speed_ratio": self.speed_spin.value(),
-            "linear_velocity": self.linear_velocity_spin.value(),
-            "yaw_velocity": self.yaw_velocity_spin.value(),
             "settle_time": self.settle_spin.value(),
+            "collect_data": precision_enabled,
+            "auto_return": self.auto_return_check.isChecked(),
+            "auto_return_distance": self.auto_return_distance_spin.value(),
         }
+        if api_name == "line_walk":
+            params.update({
+                "direction": config["direction_combo"].currentData(),
+                "distance": config["distance_spin"].value(),
+                "speed_ratio": config["speed_spin"].value(),
+                "show_progress": config["show_progress_check"].isChecked(),
+            })
+        elif api_name == "rotate":
+            params.update({
+                "direction": config["direction_combo"].currentData(),
+                "angle": config["angle_spin"].value(),
+                "speed_ratio": 50,
+                "show_progress": config["show_progress_check"].isChecked(),
+            })
+        else:
+            params.update({
+                "vx": config["vx_spin"].value(),
+                "vy": config["vy_spin"].value(),
+                "vyaw": config["vyaw_spin"].value(),
+                "duration": config["duration_spin"].value(),
+                "gait": config["gait_combo"].currentData(),
+                "speed_ratio": config["speed_spin"].value(),
+                "stand_down_after": config["stand_down_check"].isChecked(),
+                "show_progress": config["show_progress_check"].isChecked(),
+            })
         self._worker.start_move(params)
 
         self._running = True
@@ -441,60 +646,45 @@ class MainWindow(QMainWindow):
         self.traj_plot.mark_start()
         self._log_msg("─" * 40)
         loop_txt = "无限" if self.infinite_check.isChecked() else f"{self.rep_spin.value()}次"
-        api_text = self.control_api_combo.currentText()
-        if self.mode_combo.currentData() == "precision_test":
+        if api_name == "line_walk":
             self._log_msg(
-                f"[{self._ts()}] [INFO] 启动 SDK 指令精度测试: "
-                f"速度比=100%,50% 每个单项=100组 API={api_text}"
+                f"[{self._ts()}] [INFO] 启动 API: line_walk("
+                f"direction={params['direction']}, distance={params['distance']}m, "
+                f"speed_ratio={params['speed_ratio']}, show_progress={params['show_progress']}) "
+                f"循环={loop_txt}"
             )
+        elif api_name == "rotate":
             self._log_msg(
-                f"[{self._ts()}] [INFO] 前后、左右平移、左右旋转按往返配对执行，"
-                "预计记录3600条结果"
+                f"[{self._ts()}] [INFO] 启动 API: rotate("
+                f"direction={params['direction']}, angle={params['angle']}°, "
+                f"show_progress={params['show_progress']}) 循环={loop_txt}"
             )
-        elif self.mode_combo.currentText() == "正方形":
-            self._log_msg(f"[{self._ts()}] [INFO] 启动: 地址={addr} 模式=正方形 "
-                          f"边长={self.side_spin.value()}m 循环={loop_txt} "
-                          f"API={api_text} 速度比={self.speed_spin.value()}")
         else:
-            self._log_msg(f"[{self._ts()}] [INFO] 启动: 地址={addr} 模式={self.mode_combo.currentText()} "
-                          f"距离={self.dist_spin.value()}m 循环={loop_txt} "
-                          f"API={api_text} 速度比={self.speed_spin.value()}")
-        if self.control_api_combo.currentData() == "velocity_sequence":
             self._log_msg(
-                f"[{self._ts()}] [INFO] velocity_sequence 参数: "
-                f"vx={self.linear_velocity_spin.value():.2f}m/s "
-                f"vyaw={self.yaw_velocity_spin.value():.2f}rad/s"
+                f"[{self._ts()}] [INFO] 启动 API: velocity_sequence("
+                f"vx={params['vx']:.2f}, vy={params['vy']:.2f}, "
+                f"vyaw={params['vyaw']:.2f}, duration={params['duration']:.1f}s, "
+                f"gait={params['gait']}, speed_ratio={params['speed_ratio']}, "
+                f"stand_down_after={params['stand_down_after']}, "
+                f"show_progress={params['show_progress']}) 循环={loop_txt}"
             )
+        self._log_msg(
+            f"[{self._ts()}] [INFO] 当前测试精度功能: "
+            f"{'开启' if precision_enabled else '关闭'}"
+            f"{'（逐条记录误差并生成汇总）' if precision_enabled else ''}"
+        )
+        self._log_msg(
+            f"[{self._ts()}] [INFO] 自动回中: "
+            f"{'开启' if self.auto_return_check.isChecked() else '关闭'}"
+            f"{f'，触发距离>{self.auto_return_distance_spin.value():.1f}m' if self.auto_return_check.isChecked() else ''}"
+        )
         self._log_msg(f"[{self._ts()}] [INFO] 指令已下发（轨迹/IMU 采样持续运行）")
 
-    def _on_speed_slider(self, val):
-        """速度滑块实时调节：更新显示并同步到工作线程"""
-        self.lbl_speed_val.setText(str(val))
-        self.speed_spin.setValue(val)
-        # 运行中实时生效，未运行时仅保存数值
-        if self._running:
-            self._worker.update_speed(val)
+    def _selected_mode(self):
+        return self._current_action_config()["mode"]
 
-    def _on_mode_changed(self, idx):
-        """运动模式切换：正方形模式启用边长输入，禁用直线移动距离"""
-        mode = self.mode_combo.itemData(idx)
-        is_square = mode == "square"
-        is_precision = mode == "precision_test"
-        self.side_spin.setEnabled(is_square)
-        self.dist_spin.setEnabled(not is_square and not is_precision)
-        if is_precision:
-            self.rep_spin.setValue(100)
-            self.infinite_check.setChecked(False)
-        self.rep_spin.setEnabled(not is_precision and not self.infinite_check.isChecked())
-        self.infinite_check.setEnabled(not is_precision)
-        self.speed_spin.setEnabled(not is_precision)
-        self.speed_slider.setEnabled(not is_precision)
-
-    def _on_control_api_changed(self, _idx):
-        """仅在速度序列控制下开放 vx/vyaw 参数。"""
-        is_velocity = self.control_api_combo.currentData() == "velocity_sequence"
-        self.linear_velocity_spin.setEnabled(is_velocity)
-        self.yaw_velocity_spin.setEnabled(is_velocity)
+    def _selected_mode_text(self):
+        return self._current_action_config()["api"]
 
     def _clear_trajectory(self):
         """仅由用户操作清除历史轨迹和预览图层。"""
