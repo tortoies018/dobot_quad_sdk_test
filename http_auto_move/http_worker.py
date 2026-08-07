@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import queue
 import threading
 import time
@@ -24,8 +25,6 @@ class HttpAutoMoveWorker(QThread):
     odom_data = Signal(dict)       # gRPC 仅提供位置/速度；姿态始终来自 HTTP IMU
     trajectory_status = Signal(bool, str)
     log_msg = Signal(str)
-    progress = Signal(int, int, str, int)
-    command_preview = Signal(dict)
     finished_ok = Signal(str)
     emergency_result = Signal(bool, str)
 
@@ -44,6 +43,11 @@ class HttpAutoMoveWorker(QThread):
         self._stop_motion = threading.Event()
         self._heartbeat_thread: threading.Thread | None = None
         self._odom_thread: threading.Thread | None = None
+        self._pose_lock = threading.Lock()
+        self._latest_position: list[float] | None = None
+        self._latest_position_at = 0.0
+        self._latest_http_rpy: list[float] | None = None
+        self._latest_http_rpy_at = 0.0
 
     def configure(
         self,
@@ -109,6 +113,7 @@ class HttpAutoMoveWorker(QThread):
                 current_client=self._current_client,
             )
             initial = client.exchange()
+            self._remember_exchange(initial)
             self.exchange_data.emit(initial)
             self._alive.set()
             self.connected.emit(True, f"{client.control_base}（{effective_type}）")
@@ -185,6 +190,7 @@ class HttpAutoMoveWorker(QThread):
                 break
             try:
                 state = client.exchange()
+                self._remember_exchange(state)
                 self.exchange_data.emit(state)
                 if failures:
                     self._log("INFO", "exchange 心跳已恢复")
@@ -231,6 +237,9 @@ class HttpAutoMoveWorker(QThread):
                     vel = [float(value) for value in rs.vel_body]
                     while len(vel) < 3:
                         vel.append(0.0)
+                    with self._pose_lock:
+                        self._latest_position = pos[:3]
+                        self._latest_position_at = time.monotonic()
                     self.odom_data.emit({"pos": pos[:3], "vel": vel[:3]})
                     failures = 0
                     if not available:
@@ -306,8 +315,18 @@ class HttpAutoMoveWorker(QThread):
                 if not infinite and cycle > repetitions:
                     break
                 total = 0 if infinite else repetitions
+                group_start = self._pose_snapshot()
                 for index, segment in enumerate(segments):
                     stage = f"{name} · {segment['name']} ({index + 1}/{len(segments)})"
+                    segment_start = self._pose_snapshot()
+                    axes = segment["axes"]
+                    self._log(
+                        "CMD",
+                        f"▶ 第{cycle}组 {self._direction_symbol(axes)} {segment['name']} | "
+                        f"btn_move=({axes['move_x']},{axes['move_y']}) "
+                        f"btn_turn=({axes['turn_x']},{axes['turn_y']}) | "
+                        f"持续={segment['duration']:.1f}s @ {rate_hz:.1f}Hz",
+                    )
                     self._drive_once(
                         client,
                         stage,
@@ -317,6 +336,14 @@ class HttpAutoMoveWorker(QThread):
                         cycle,
                         total,
                     )
+                    self._log(
+                        "CMD", f"■ 第{cycle}组 {segment['name']}结束，摇杆已归零"
+                    )
+                    segment_end = self._pose_after(time.monotonic(), timeout=0.35)
+                    self._log_segment_error(
+                        cycle, segment["name"], segment["axes"],
+                        segment_start, segment_end,
+                    )
                     if self._stop_motion.is_set() or not self._alive.is_set():
                         break
                     has_more = (
@@ -325,9 +352,13 @@ class HttpAutoMoveWorker(QThread):
                         or cycle < repetitions
                     )
                     if settle_time and has_more:
-                        self.progress.emit(cycle, total, "动作间隔", 100)
+                        self._log("CMD", f"… 动作间隔 {settle_time:.1f}s")
                         if self._stop_motion.wait(settle_time):
                             break
+
+                if not self._stop_motion.is_set() and self._alive.is_set():
+                    group_end = self._pose_snapshot()
+                    self._log_group_error(cycle, name, group_start, group_end)
 
             stopped = self._stop_motion.is_set()
             message = "动作已停止" if stopped else "动作执行完成"
@@ -338,7 +369,6 @@ class HttpAutoMoveWorker(QThread):
             self.finished_ok.emit(f"动作执行失败: {exc}")
         finally:
             self._safe_stop(client)
-            self.command_preview.emit({})
 
     def _drive_once(
         self,
@@ -358,22 +388,195 @@ class HttpAutoMoveWorker(QThread):
             if elapsed >= duration:
                 break
             client.joystick(**axes)
-            percent = min(99, int(elapsed / duration * 100))
-            self.progress.emit(cycle, total, name, percent)
-            self.command_preview.emit(
-                {
-                    **axes,
-                    "duration": duration,
-                    "elapsed": elapsed,
-                    "remaining": max(0.0, duration - elapsed),
-                }
-            )
             next_tick += period
             wait = max(0.0, next_tick - time.monotonic())
             if self._stop_motion.wait(wait):
                 break
         self._safe_stop(client)
-        self.progress.emit(cycle, total, name, 100)
+
+    def _remember_exchange(self, data: dict[str, Any]) -> None:
+        """保存 HTTP IMU，供误差计算和指令可视化使用。"""
+        imu = data.get("imu") if isinstance(data.get("imu"), dict) else {}
+        rpy = imu.get("rpy")
+        if not isinstance(rpy, (list, tuple)) or len(rpy) < 3:
+            return
+        try:
+            values = [float(value) for value in rpy[:3]]
+        except (TypeError, ValueError):
+            return
+        if not all(math.isfinite(value) for value in values):
+            return
+        with self._pose_lock:
+            self._latest_http_rpy = values
+            self._latest_http_rpy_at = time.monotonic()
+
+    def _pose_snapshot(self) -> dict[str, Any]:
+        with self._pose_lock:
+            return {
+                "pos": (
+                    list(self._latest_position)
+                    if self._latest_position is not None else None
+                ),
+                "pos_at": self._latest_position_at,
+                "rpy": (
+                    list(self._latest_http_rpy)
+                    if self._latest_http_rpy is not None else None
+                ),
+                "rpy_at": self._latest_http_rpy_at,
+            }
+
+    def _pose_after(self, after: float, timeout: float) -> dict[str, Any]:
+        """动作归零后等候一帧新位置/IMU，避免使用动作前的旧采样。"""
+        initial = self._pose_snapshot()
+        need_pos = initial["pos"] is not None
+        need_rpy = initial["rpy"] is not None
+        if not need_pos and not need_rpy:
+            return initial
+        deadline = time.monotonic() + max(0.0, timeout)
+        latest = initial
+        while self._alive.is_set() and time.monotonic() < deadline:
+            latest = self._pose_snapshot()
+            pos_ready = not need_pos or latest["pos_at"] > after
+            rpy_ready = not need_rpy or latest["rpy_at"] > after
+            if pos_ready and rpy_ready:
+                break
+            time.sleep(0.02)
+        return latest
+
+    @staticmethod
+    def _direction_symbol(axes: dict[str, int]) -> str:
+        move_x = int(axes.get("move_x", 0))
+        move_y = int(axes.get("move_y", 0))
+        turn_x = int(axes.get("turn_x", 0))
+        if move_y > 0:
+            return "↑"
+        if move_y < 0:
+            return "↓"
+        if move_x < 0:
+            return "←"
+        if move_x > 0:
+            return "→"
+        if turn_x < 0:
+            return "↺"
+        if turn_x > 0:
+            return "↻"
+        return "■"
+
+    @staticmethod
+    def _normalise_degrees(value: float) -> float:
+        return (float(value) + 180.0) % 360.0 - 180.0
+
+    @classmethod
+    def _segment_error_text(
+        cls,
+        segment_name: str,
+        axes: dict[str, int],
+        start: dict[str, Any],
+        end: dict[str, Any],
+    ) -> str | None:
+        start_pos, end_pos = start.get("pos"), end.get("pos")
+        start_rpy, end_rpy = start.get("rpy"), end.get("rpy")
+        yaw_change = None
+        if start_rpy is not None and end_rpy is not None:
+            yaw_change = cls._normalise_degrees(
+                math.degrees(float(end_rpy[2]) - float(start_rpy[2]))
+            )
+
+        turn_x = int(axes.get("turn_x", 0))
+        if turn_x:
+            parts = []
+            if yaw_change is not None:
+                expected_sign = 1 if turn_x < 0 else -1
+                direction_ok = yaw_change == 0 or math.copysign(1, yaw_change) == expected_sign
+                parts.append(
+                    f"实际转角={yaw_change:+.2f}°，方向={'符合' if direction_ok else '相反'}"
+                )
+            if start_pos is not None and end_pos is not None:
+                dx = float(end_pos[0]) - float(start_pos[0])
+                dy = float(end_pos[1]) - float(start_pos[1])
+                dz = float(end_pos[2]) - float(start_pos[2])
+                parts.append(
+                    f"位置漂移误差={math.sqrt(dx * dx + dy * dy + dz * dz):.4f}m"
+                )
+            return f"{segment_name}: " + "，".join(parts) if parts else None
+
+        if start_pos is None or end_pos is None:
+            return None
+        dx = float(end_pos[0]) - float(start_pos[0])
+        dy = float(end_pos[1]) - float(start_pos[1])
+        dz = float(end_pos[2]) - float(start_pos[2])
+        yaw = float(start_rpy[2]) if start_rpy is not None else 0.0
+        forward = (math.cos(yaw), math.sin(yaw))
+        left = (-math.sin(yaw), math.cos(yaw))
+        move_x = int(axes.get("move_x", 0))
+        move_y = int(axes.get("move_y", 0))
+        if move_y:
+            intended = forward if move_y > 0 else (-forward[0], -forward[1])
+        else:
+            intended = left if move_x < 0 else (-left[0], -left[1])
+        along = dx * intended[0] + dy * intended[1]
+        lateral = abs(-dx * intended[1] + dy * intended[0])
+        text = (
+            f"{segment_name}: 沿指令位移={along:+.4f}m，"
+            f"侧向误差={lateral:.4f}m，高度漂移={dz:+.4f}m"
+        )
+        if yaw_change is not None:
+            text += f"，偏航漂移={yaw_change:+.2f}°"
+        return text
+
+    @classmethod
+    def _group_error_text(
+        cls,
+        cycle: int,
+        name: str,
+        start: dict[str, Any],
+        end: dict[str, Any],
+    ) -> str | None:
+        parts = []
+        start_pos, end_pos = start.get("pos"), end.get("pos")
+        if start_pos is not None and end_pos is not None:
+            dx = float(end_pos[0]) - float(start_pos[0])
+            dy = float(end_pos[1]) - float(start_pos[1])
+            dz = float(end_pos[2]) - float(start_pos[2])
+            parts.append(f"平面={math.hypot(dx, dy):.4f}m")
+            parts.append(f"3D={math.sqrt(dx * dx + dy * dy + dz * dz):.4f}m")
+            parts.append(f"Δ=({dx:+.4f},{dy:+.4f},{dz:+.4f})m")
+        start_rpy, end_rpy = start.get("rpy"), end.get("rpy")
+        if start_rpy is not None and end_rpy is not None:
+            yaw_error = abs(cls._normalise_degrees(
+                math.degrees(float(end_rpy[2]) - float(start_rpy[2]))
+            ))
+            parts.append(f"偏航={yaw_error:.2f}°")
+        if not parts:
+            return None
+        return f"第{cycle}组 {name} 回零误差: " + "，".join(parts)
+
+    def _log_segment_error(
+        self,
+        cycle: int,
+        segment_name: str,
+        axes: dict[str, int],
+        start: dict[str, Any],
+        end: dict[str, Any],
+    ) -> None:
+        text = self._segment_error_text(segment_name, axes, start, end)
+        if text:
+            self._log("MEASURE", f"第{cycle}组 {text}")
+        else:
+            self._log("WARN", f"第{cycle}组 {segment_name}: 无位置/IMU采样，无法计算误差")
+
+    def _log_group_error(
+        self,
+        cycle: int,
+        name: str,
+        start: dict[str, Any],
+        end: dict[str, Any],
+    ) -> None:
+        text = self._group_error_text(cycle, name, start, end)
+        if text:
+            self._log("MEASURE", text)
+        else:
+            self._log("WARN", f"第{cycle}组 {name}: 无位置/IMU采样，无法计算回零误差")
 
     def _safe_stop(self, client: MH4HttpClient, attempts: int = 3) -> None:
         """重复下发摇杆归零；失败只记日志，不遮盖原始异常。"""

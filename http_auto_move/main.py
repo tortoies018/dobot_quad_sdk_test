@@ -22,7 +22,6 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QMainWindow,
     QMessageBox,
-    QProgressBar,
     QPushButton,
     QSpinBox,
     QSplitter,
@@ -63,8 +62,6 @@ class MainWindow(QMainWindow):
         self._worker.odom_data.connect(self._on_odom)
         self._worker.trajectory_status.connect(self._on_trajectory_status)
         self._worker.log_msg.connect(self._append_log)
-        self._worker.progress.connect(self._on_progress)
-        self._worker.command_preview.connect(self._on_preview)
         self._worker.finished_ok.connect(self._on_finished)
         self._worker.emergency_result.connect(self._on_emergency_result)
         self._worker.finished.connect(self._on_worker_thread_finished)
@@ -94,7 +91,6 @@ class MainWindow(QMainWindow):
         right = QWidget()
         right_layout = QVBoxLayout(right)
         right_layout.addWidget(self._build_status_group())
-        right_layout.addWidget(self._build_progress_group())
         detail_splitter = QSplitter(Qt.Vertical)
         detail_splitter.setChildrenCollapsible(False)
         detail_splitter.setHandleWidth(6)
@@ -196,16 +192,15 @@ class MainWindow(QMainWindow):
         ))
         amplitude = self._stick_spin()
         form.addRow("摇杆幅值:", amplitude)
-        first_duration = self._double_spin(0.1, 600.0, 2.0, " s", 1, 0.1)
-        second_duration = self._double_spin(0.1, 600.0, 2.0, " s", 1, 0.1)
-        form.addRow(f"{first[0]}持续时间:", first_duration)
-        form.addRow(f"{second[0]}持续时间:", second_duration)
+        duration = self._double_spin(0.1, 600.0, 2.0, " s", 1, 0.1)
+        duration.setToolTip("两个相反方向使用相同时间，组结束时理论上回到起点")
+        form.addRow("每方向持续时间:", duration)
         self._action_configs.append({
             "title": title,
             "amplitude": amplitude,
             "segments": (
-                (first[0], first[1], first_duration),
-                (second[0], second[1], second_duration),
+                (first[0], first[1], duration),
+                (second[0], second[1], duration),
             ),
         })
         self.tabs.addTab(tab, title)
@@ -294,34 +289,6 @@ class MainWindow(QMainWindow):
         form.addRow("最近心跳:", self.heartbeat_label)
         return group
 
-    def _build_progress_group(self) -> QGroupBox:
-        group = QGroupBox("动作状态")
-        group.setStyleSheet(self._group_style("#69f0ae"))
-        layout = QVBoxLayout(group)
-        self.stage_label = QLabel("待机")
-        self.stage_label.setStyleSheet("color:#fff; font:bold 14px;")
-        layout.addWidget(self.stage_label)
-        self.progress_bar = QProgressBar()
-        self.progress_bar.setRange(0, 100)
-        self.progress_bar.setStyleSheet(
-            "QProgressBar { background:#34373c; border:1px solid #4a4d52; "
-            "border-radius:4px; height:20px; text-align:center; color:#fff; }"
-            "QProgressBar::chunk { background:#26a69a; border-radius:4px; }"
-        )
-        layout.addWidget(self.progress_bar)
-        self.preview_label = QLabel("btn_move=(0, 0)　btn_turn=(0, 0)")
-        self.preview_label.setStyleSheet(
-            "color:#df70ff; background:#25272b; border:1px solid #633675; "
-            "border-radius:3px; padding:6px; font:12px monospace;"
-        )
-        self.preview_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
-        layout.addWidget(self.preview_label)
-        warning = QLabel("每组包含两个相反方向；HTTP 摇杆固定以 10 Hz 发送。")
-        warning.setWordWrap(True)
-        warning.setStyleSheet("color:#ffcc80; font:11px;")
-        layout.addWidget(warning)
-        return group
-
     def _build_trajectory_group(self) -> QGroupBox:
         group = QGroupBox("实际 3D 轨迹")
         group.setStyleSheet(self._group_style("#69f0ae"))
@@ -329,7 +296,7 @@ class MainWindow(QMainWindow):
         self.trajectory_plot = TrajectoryPlot3D()
         layout.addWidget(self.trajectory_plot, 1)
         controls = QHBoxLayout()
-        hint = QLabel("绿线：实际位置　彩色轴：HTTP IMU 姿态")
+        hint = QLabel("绿线：实际轨迹　彩色轴：HTTP IMU 姿态")
         hint.setStyleSheet("color:#a8b3bc; font:11px;")
         controls.addWidget(hint)
         controls.addStretch()
@@ -403,7 +370,6 @@ class MainWindow(QMainWindow):
         self._set_connected_ui(True)
         self.start_button.setEnabled(False)
         self.stop_button.setEnabled(True)
-        self.progress_bar.setValue(0)
         self.trajectory_plot.mark_start()
         self._worker.start_move(command)
 
@@ -434,7 +400,7 @@ class MainWindow(QMainWindow):
         if not self._moving:
             return
         self._worker.stop_move()
-        self.stage_label.setText("正在停止并归零摇杆…")
+        self._append_log(f"[{self._time()}] [CMD] ■ 请求停止，正在发送全零摇杆")
         self.stop_button.setEnabled(False)
 
     def _on_connected(self, ok: bool, detail: str) -> None:
@@ -511,35 +477,14 @@ class MainWindow(QMainWindow):
         self.trajectory_plot.clear()
         self._append_log(f"[{self._time()}] [INFO] 已清除轨迹")
 
-    def _on_progress(
-        self, cycle: int, total: int, stage: str, percent: int
-    ) -> None:
-        loop = f"第 {cycle} 次" if total == 0 else f"第 {cycle}/{total} 次"
-        self.stage_label.setText(f"{loop}　{stage}")
-        self.progress_bar.setValue(percent)
-
-    def _on_preview(self, data: dict[str, Any]) -> None:
-        if not data:
-            self.preview_label.setText("btn_move=(0, 0)　btn_turn=(0, 0)")
-            return
-        self.preview_label.setText(
-            f"btn_move=({data['move_x']}, {data['move_y']})　"
-            f"btn_turn=({data['turn_x']}, {data['turn_y']})　"
-            f"剩余 {data['remaining']:.2f}s"
-        )
-
     def _on_finished(self, message: str) -> None:
         self._moving = False
         self._set_connected_ui(self._connected)
-        self.stage_label.setText(message)
-        if "完成" in message:
-            self.progress_bar.setValue(100)
 
     def _on_emergency_result(self, ok: bool, message: str) -> None:
         if ok and "已触发" in message:
             self._moving = False
             self._set_connected_ui(self._connected)
-            self.stage_label.setText(message)
 
     def _set_connected_ui(self, connected: bool) -> None:
         self.start_button.setEnabled(connected and not self._moving)

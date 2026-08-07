@@ -1,3 +1,4 @@
+import math
 import unittest
 
 from http_auto_move.http_worker import HttpAutoMoveWorker
@@ -19,6 +20,15 @@ class _FakeClient:
 
 
 class WorkerSequenceTest(unittest.TestCase):
+    @staticmethod
+    def _pose(pos, yaw_deg):
+        return {
+            "pos": list(pos),
+            "pos_at": 1.0,
+            "rpy": [0.0, 0.0, math.radians(yaw_deg)],
+            "rpy_at": 1.0,
+        }
+
     def test_connection_type_uses_controller_report(self):
         worker = HttpAutoMoveWorker()
         worker._connection_type = "AP"
@@ -52,6 +62,8 @@ class WorkerSequenceTest(unittest.TestCase):
         client = _FakeClient()
         worker._client = client
         worker._alive.set()
+        logs = []
+        worker.log_msg.connect(logs.append)
         worker._execute({
             "name": "前后来回",
             "segments": [
@@ -67,6 +79,53 @@ class WorkerSequenceTest(unittest.TestCase):
         self.assertTrue(any(call["move_y"] > 0 for call in non_zero))
         self.assertTrue(any(call["move_y"] < 0 for call in non_zero))
         self.assertTrue(all(value == 0 for value in client.calls[-1].values()))
+        self.assertTrue(any("[CMD] ▶ 第1组 ↑ 前进" in line for line in logs))
+        self.assertTrue(any("[CMD] ▶ 第1组 ↓ 后退" in line for line in logs))
+        self.assertTrue(any("摇杆已归零" in line for line in logs))
+
+    def test_translation_and_group_errors_are_formatted_for_log(self):
+        start = self._pose([0.0, 0.0, 0.0], 0.0)
+        end = self._pose([1.0, 0.1, 0.02], 3.0)
+        segment = HttpAutoMoveWorker._segment_error_text(
+            "前进",
+            {"move_x": 0, "move_y": 3000, "turn_x": 0, "turn_y": 0},
+            start,
+            end,
+        )
+        self.assertIn("沿指令位移=+1.0000m", segment)
+        self.assertIn("侧向误差=0.1000m", segment)
+
+        group = HttpAutoMoveWorker._group_error_text(
+            2, "前后来回", start, end
+        )
+        self.assertIn("第2组 前后来回 回零误差", group)
+        self.assertIn("平面=1.0050m", group)
+        self.assertIn("偏航=3.00°", group)
+
+    def test_rotation_error_and_log_direction_symbol(self):
+        worker = HttpAutoMoveWorker()
+        start = self._pose([0.0, 0.0, 0.0], 179.0)
+        end = self._pose([0.02, 0.0, 0.0], -179.0)
+        rotation = worker._segment_error_text(
+            "左转",
+            {"move_x": 0, "move_y": 0, "turn_x": -3000, "turn_y": 0},
+            start,
+            end,
+        )
+        self.assertIn("实际转角=+2.00°", rotation)
+        self.assertIn("位置漂移误差=0.0200m", rotation)
+        self.assertEqual(
+            worker._direction_symbol(
+                {"move_x": 0, "move_y": 8000, "turn_x": 0, "turn_y": 0}
+            ),
+            "↑",
+        )
+        self.assertEqual(
+            worker._direction_symbol(
+                {"move_x": 0, "move_y": 0, "turn_x": -8000, "turn_y": 0}
+            ),
+            "↺",
+        )
 
 
 if __name__ == "__main__":
