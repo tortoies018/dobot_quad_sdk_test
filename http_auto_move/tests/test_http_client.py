@@ -6,7 +6,7 @@ from unittest.mock import patch
 from urllib.parse import urlsplit
 
 from http_auto_move.http_client import MH4HttpClient, MH4HttpError
-from http_auto_move.motion import direction_axes, scaled_duration
+from http_auto_move.motion import direction_axes
 
 
 class _Response:
@@ -44,17 +44,18 @@ class MH4HttpClientTest(unittest.TestCase):
     def test_address_defaults_to_documented_ports(self):
         client = MH4HttpClient("192.168.1.6")
         self.assertEqual(client.control_base, "http://192.168.1.6:22000")
-        self.assertEqual(client.algorithm_base, "http://192.168.1.6:22002")
 
     def test_connection_and_exchange(self):
+        self.responses[("GET", "/connection/type")] = {"value": "Station"}
         self.responses[("GET", "/protocol/exchange")] = {
             "imu": {"rpy": [0, 0, 0]}
         }
+        self.assertEqual(self.client.connection_type(), "Station")
         self.client.connect("test", "AP", 1)
         result = self.client.exchange()
         self.assertIn("imu", result)
         self.assertEqual(
-            self.requests[0],
+            self.requests[1],
             (
                 "POST",
                 "/connection/state",
@@ -67,7 +68,8 @@ class MH4HttpClientTest(unittest.TestCase):
         )
 
     def test_joystick_payload_is_clamped(self):
-        self.client.joystick(-50000, 50000, -123, 456)
+        with patch("http_auto_move.http_client.time.time", return_value=1234.567):
+            self.client.joystick(-50000, 50000, -123, 456)
         self.assertEqual(
             self.requests[-1],
             (
@@ -76,23 +78,23 @@ class MH4HttpClientTest(unittest.TestCase):
                 {
                     "btn_move": {"x": -32768, "y": 32767},
                     "btn_turn": {"x": -123, "y": 456},
+                    "timestamp": 1234567,
                 },
             ),
         )
 
-    def test_emergency_and_speed_ratio(self):
-        self.client.emergency_stop(True)
-        self.client.set_speed_ratio(200)
+    def test_movement_action(self):
+        self.client.movement_action(20)
         self.assertEqual(
-            self.requests[-2:],
-            [
-                ("POST", "/settings/emergencyStop", {"value": True}),
-                (
-                    "POST",
-                    "/algs/settings/movement/speedRatio",
-                    {"ratio": 100},
-                ),
-            ],
+            self.requests[-1],
+            ("POST", "/settings/movement/action", {"id": 20}),
+        )
+
+    def test_emergency_stop(self):
+        self.client.emergency_stop(True)
+        self.assertEqual(
+            self.requests[-1],
+            ("POST", "/settings/emergencyStop", {"value": True}),
         )
 
     def test_false_status_raises(self):
@@ -103,14 +105,10 @@ class MH4HttpClientTest(unittest.TestCase):
 
 class MotionTest(unittest.TestCase):
     def test_direction_axes(self):
-        self.assertEqual(direction_axes("forward", 8000)["move_y"], -8000)
+        self.assertEqual(direction_axes("forward", 8000)["move_y"], 8000)
+        self.assertEqual(direction_axes("backward", 8000)["move_y"], -8000)
         self.assertEqual(direction_axes("right", 8000)["move_x"], 8000)
         self.assertEqual(direction_axes("rotate_left", 8000)["turn_x"], -8000)
-
-    def test_duration_uses_amplitude_fraction(self):
-        self.assertAlmostEqual(scaled_duration(1.0, 1.0, 32767), 1.0)
-        self.assertAlmostEqual(scaled_duration(1.0, 1.0, 16384), 32767 / 16384)
-
 
 if __name__ == "__main__":
     unittest.main()

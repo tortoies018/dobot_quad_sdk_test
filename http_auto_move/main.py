@@ -5,6 +5,7 @@ from __future__ import annotations
 import math
 import sys
 import time
+from pathlib import Path
 from typing import Any
 
 from PySide6.QtCore import Qt
@@ -34,11 +35,16 @@ from PySide6.QtWidgets import (
 try:
     from .http_client import MH4HttpClient
     from .http_worker import HttpAutoMoveWorker
-    from .motion import direction_axes, scaled_duration
+    from .motion import direction_axes
 except ImportError:  # 支持 python3 http_auto_move/main.py
     from http_client import MH4HttpClient
     from http_worker import HttpAutoMoveWorker
-    from motion import direction_axes, scaled_duration
+    from motion import direction_axes
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+from auto_move.trajectory_plot import TrajectoryPlot3D
 
 
 class MainWindow(QMainWindow):
@@ -54,6 +60,8 @@ class MainWindow(QMainWindow):
         self._worker = HttpAutoMoveWorker(self)
         self._worker.connected.connect(self._on_connected)
         self._worker.exchange_data.connect(self._on_exchange)
+        self._worker.odom_data.connect(self._on_odom)
+        self._worker.trajectory_status.connect(self._on_trajectory_status)
         self._worker.log_msg.connect(self._append_log)
         self._worker.progress.connect(self._on_progress)
         self._worker.command_preview.connect(self._on_preview)
@@ -62,6 +70,8 @@ class MainWindow(QMainWindow):
         self._worker.finished.connect(self._on_worker_thread_finished)
         self._connected = False
         self._moving = False
+        self._last_http_rpy = [0.0, 0.0, 0.0]
+        self._last_position: list[float] | None = None
         self._action_configs: list[dict[str, Any]] = []
 
         central = QWidget()
@@ -85,7 +95,14 @@ class MainWindow(QMainWindow):
         right_layout = QVBoxLayout(right)
         right_layout.addWidget(self._build_status_group())
         right_layout.addWidget(self._build_progress_group())
-        right_layout.addWidget(self._build_log_group(), 1)
+        detail_splitter = QSplitter(Qt.Vertical)
+        detail_splitter.setChildrenCollapsible(False)
+        detail_splitter.setHandleWidth(6)
+        detail_splitter.setStyleSheet("QSplitter::handle { background:#42464c; }")
+        detail_splitter.addWidget(self._build_trajectory_group())
+        detail_splitter.addWidget(self._build_log_group())
+        detail_splitter.setSizes([430, 190])
+        right_layout.addWidget(detail_splitter, 1)
         splitter.addWidget(right)
         splitter.setSizes([570, 670])
 
@@ -99,10 +116,10 @@ class MainWindow(QMainWindow):
         form = QFormLayout(group)
 
         row = QHBoxLayout()
-        self.address_edit = QLineEdit("192.168.1.6:22000")
-        self.address_edit.setPlaceholderText("192.168.1.6:22000")
+        self.address_edit = QLineEdit("10.30.12.196:22000")
+        self.address_edit.setPlaceholderText("例如 10.30.12.196:22000")
         self.address_edit.setStyleSheet(self._input_style())
-        self.address_edit.setToolTip("AP 默认 192.168.1.6:22000；网线默认 192.168.5.2:22000")
+        self.address_edit.setToolTip("当前机器狗：10.30.12.196:22000")
         row.addWidget(self.address_edit, 1)
         self.connect_button = QPushButton("连接")
         self.connect_button.setStyleSheet(self._button_style("#1565c0", "#1e88e5"))
@@ -112,7 +129,12 @@ class MainWindow(QMainWindow):
 
         options = QHBoxLayout()
         self.connection_type_combo = QComboBox()
-        for label, value in (("AP", "AP"), ("Station", "Station"), ("4G", "4G")):
+        for label, value in (
+            ("自动检测", "Auto"),
+            ("AP", "AP"),
+            ("Station", "Station"),
+            ("4G", "4G"),
+        ):
             self.connection_type_combo.addItem(label, value)
         self.connection_type_combo.setStyleSheet(self._input_style())
         options.addWidget(self.connection_type_combo)
@@ -120,6 +142,13 @@ class MainWindow(QMainWindow):
         self.client_name_edit.setStyleSheet(self._input_style())
         options.addWidget(self.client_name_edit, 1)
         form.addRow("方式 / 名称:", options)
+
+        self.grpc_port_spin = QSpinBox()
+        self.grpc_port_spin.setRange(1, 65535)
+        self.grpc_port_spin.setValue(50051)
+        self.grpc_port_spin.setStyleSheet(self._input_style())
+        self.grpc_port_spin.setToolTip("只读实际位置用于轨迹；IMU 始终来自 HTTP exchange")
+        form.addRow("轨迹端口:", self.grpc_port_spin)
 
         note = QLabel("连接后以 5 Hz 调用 /protocol/exchange，维持 occupied 状态。")
         note.setWordWrap(True)
@@ -137,113 +166,49 @@ class MainWindow(QMainWindow):
             "QTabBar::tab { background:#3a3d42; color:#d8d8d8; padding:7px 10px; }"
             "QTabBar::tab:selected { background:#00796b; color:#fff; }"
         )
-        self._add_distance_tab("前后移动", "longitudinal")
-        self._add_distance_tab("左右移动", "lateral")
-        self._add_rotate_tab()
-        self._add_raw_tab()
+        self._add_pair_tab(
+            "前后来回", "一组：前进 → 后退",
+            ("前进", "forward"), ("后退", "backward"),
+        )
+        self._add_pair_tab(
+            "左右来回", "一组：左移 → 右移",
+            ("左移", "left"), ("右移", "right"),
+        )
+        self._add_pair_tab(
+            "左右旋转", "一组：左转 → 右转",
+            ("左转", "rotate_left"), ("右转", "rotate_right"),
+        )
         layout.addWidget(self.tabs)
         return group
 
-    def _add_distance_tab(self, title: str, axis: str) -> None:
+    def _add_pair_tab(
+        self,
+        title: str,
+        description: str,
+        first: tuple[str, str],
+        second: tuple[str, str],
+    ) -> None:
+        """创建只包含摇杆幅值和两个持续时间的双向动作页签。"""
         tab = QWidget()
         form = QFormLayout(tab)
-        if axis == "longitudinal":
-            directions = (("前进", "forward"), ("后退", "backward"))
-            default_speed = 0.6
-            description = "btn_move.y：前进为负，后退为正（文档未定义方向，请先低幅值验证）"
-        else:
-            directions = (("左移", "left"), ("右移", "right"))
-            default_speed = 0.4
-            description = "btn_move.x：左移为负，右移为正（文档未定义方向，请先低幅值验证）"
-        form.addRow(self._intro(description))
-
-        direction = QComboBox()
-        for label, value in directions:
-            direction.addItem(label, value)
-        direction.setStyleSheet(self._input_style())
-        form.addRow("方向:", direction)
-
-        target = self._double_spin(0.05, 100.0, 1.0, " m", 2, 0.1)
-        form.addRow("目标距离:", target)
+        form.addRow(self._intro(
+            f"{description}\n每个方向持续发送带 timestamp 的 HTTP 摇杆，结束后自动归零。"
+        ))
         amplitude = self._stick_spin()
         form.addRow("摇杆幅值:", amplitude)
-        calibrated_rate = self._double_spin(0.01, 5.0, default_speed, " m/s", 2, 0.05)
-        calibrated_rate.setToolTip("实测满摇杆速度；程序按摇杆幅值线性缩放后估算持续时间")
-        form.addRow("满幅标定速度:", calibrated_rate)
-        invert = QCheckBox("反转该方向的摇杆正负号")
-        invert.setStyleSheet("color:#ffcc80;")
-        form.addRow("方向修正:", invert)
-
-        self._action_configs.append(
-            {
-                "kind": "distance",
-                "title": title,
-                "direction": direction,
-                "target": target,
-                "amplitude": amplitude,
-                "rate": calibrated_rate,
-                "invert": invert,
-            }
-        )
+        first_duration = self._double_spin(0.1, 600.0, 2.0, " s", 1, 0.1)
+        second_duration = self._double_spin(0.1, 600.0, 2.0, " s", 1, 0.1)
+        form.addRow(f"{first[0]}持续时间:", first_duration)
+        form.addRow(f"{second[0]}持续时间:", second_duration)
+        self._action_configs.append({
+            "title": title,
+            "amplitude": amplitude,
+            "segments": (
+                (first[0], first[1], first_duration),
+                (second[0], second[1], second_duration),
+            ),
+        })
         self.tabs.addTab(tab, title)
-
-    def _add_rotate_tab(self) -> None:
-        tab = QWidget()
-        form = QFormLayout(tab)
-        form.addRow(self._intro(
-            "btn_turn.x：左转为负，右转为正；角度由“标定角速度 × 时间”开环估算。"
-        ))
-        direction = QComboBox()
-        direction.addItem("左转", "rotate_left")
-        direction.addItem("右转", "rotate_right")
-        direction.setStyleSheet(self._input_style())
-        form.addRow("方向:", direction)
-        target = self._double_spin(1.0, 3600.0, 90.0, " °", 1, 5.0)
-        form.addRow("目标角度:", target)
-        amplitude = self._stick_spin()
-        form.addRow("摇杆幅值:", amplitude)
-        calibrated_rate = self._double_spin(1.0, 720.0, 90.0, " °/s", 1, 5.0)
-        calibrated_rate.setToolTip("实测满摇杆角速度；程序按摇杆幅值线性缩放后估算持续时间")
-        form.addRow("满幅标定角速度:", calibrated_rate)
-        invert = QCheckBox("反转该方向的摇杆正负号")
-        invert.setStyleSheet("color:#ffcc80;")
-        form.addRow("方向修正:", invert)
-        self._action_configs.append(
-            {
-                "kind": "rotate",
-                "title": "原地旋转",
-                "direction": direction,
-                "target": target,
-                "amplitude": amplitude,
-                "rate": calibrated_rate,
-                "invert": invert,
-            }
-        )
-        self.tabs.addTab(tab, "原地旋转")
-
-    def _add_raw_tab(self) -> None:
-        tab = QWidget()
-        form = QFormLayout(tab)
-        form.addRow(self._intro(
-            "直接发送文档定义的 btn_move / btn_turn，范围 -32768～32767；结束后自动归零。"
-        ))
-        spins: dict[str, QSpinBox] = {}
-        for name, default in (
-            ("move_x", 0), ("move_y", 0), ("turn_x", 0), ("turn_y", 0)
-        ):
-            spin = QSpinBox()
-            spin.setRange(-32768, 32767)
-            spin.setValue(default)
-            spin.setSingleStep(1000)
-            spin.setStyleSheet(self._input_style())
-            form.addRow(f"{name}:", spin)
-            spins[name] = spin
-        duration = self._double_spin(0.05, 600.0, 2.0, " s", 2, 0.1)
-        form.addRow("持续时间:", duration)
-        self._action_configs.append(
-            {"kind": "raw", "title": "原始摇杆", "spins": spins, "duration": duration}
-        )
-        self.tabs.addTab(tab, "原始摇杆")
 
     def _build_common_group(self) -> QGroupBox:
         group = QGroupBox("执行参数")
@@ -264,33 +229,23 @@ class MainWindow(QMainWindow):
         )
         loop_row.addWidget(self.infinite_check)
         loop_row.addStretch()
-        form.addRow("循环:", loop_row)
+        form.addRow("执行组数:", loop_row)
 
-        timings = QHBoxLayout()
-        self.rate_spin = QDoubleSpinBox()
-        self.rate_spin.setRange(2.0, 50.0)
-        self.rate_spin.setValue(20.0)
-        self.rate_spin.setSuffix(" Hz")
-        self.rate_spin.setStyleSheet(self._input_style())
-        timings.addWidget(self.rate_spin)
         self.settle_spin = self._double_spin(0.0, 30.0, 0.5, " s", 1, 0.1)
-        timings.addWidget(self.settle_spin)
-        form.addRow("发送频率 / 间隔:", timings)
+        self.settle_spin.setToolTip("每个方向结束并归零后，等待多久再执行下一方向")
+        form.addRow("动作间隔:", self.settle_spin)
 
-        speed_row = QHBoxLayout()
-        self.speed_ratio_check = QCheckBox("同步到 22002")
-        self.speed_ratio_check.setChecked(False)
-        self.speed_ratio_check.setToolTip("调用 /algs/settings/movement/speedRatio")
-        self.speed_ratio_check.setStyleSheet("color:#80cbc4;")
-        speed_row.addWidget(self.speed_ratio_check)
-        self.speed_ratio_spin = QSpinBox()
-        self.speed_ratio_spin.setRange(10, 100)
-        self.speed_ratio_spin.setValue(50)
-        self.speed_ratio_spin.setSuffix(" %")
-        self.speed_ratio_spin.setStyleSheet(self._input_style())
-        speed_row.addWidget(self.speed_ratio_spin)
-        speed_row.addStretch()
-        form.addRow("算法速度比例:", speed_row)
+        self.prepare_action_combo = QComboBox()
+        for label, action_id in (
+            ("WALK (20)", 20),
+            ("RL (21)", 21),
+            ("FLYING_TROT (22)", 22),
+            ("保持当前状态", None),
+        ):
+            self.prepare_action_combo.addItem(label, action_id)
+        self.prepare_action_combo.setStyleSheet(self._input_style())
+        self.prepare_action_combo.setToolTip("开始前通过 HTTP /settings/movement/action 切换状态")
+        form.addRow("运动状态:", self.prepare_action_combo)
         return group
 
     def _build_control_buttons(self) -> QHBoxLayout:
@@ -319,12 +274,20 @@ class MainWindow(QMainWindow):
         form = QFormLayout(group)
         self.connection_label = self._status_label("未连接")
         self.rpy_label = self._status_label("—")
+        self.gyro_label = self._status_label("—")
+        self.accel_label = self._status_label("—")
+        self.position_label = self._status_label("—")
+        self.trajectory_source_label = self._status_label("未连接")
         self.battery_label = self._status_label("—")
         self.motion_label = self._status_label("—")
         self.emergency_label = self._status_label("—")
         self.heartbeat_label = self._status_label("—")
         form.addRow("连接:", self.connection_label)
         form.addRow("IMU RPY:", self.rpy_label)
+        form.addRow("HTTP 陀螺仪:", self.gyro_label)
+        form.addRow("HTTP 加速度:", self.accel_label)
+        form.addRow("实际位置:", self.position_label)
+        form.addRow("轨迹源:", self.trajectory_source_label)
         form.addRow("电池:", self.battery_label)
         form.addRow("运动状态:", self.motion_label)
         form.addRow("急停:", self.emergency_label)
@@ -353,12 +316,28 @@ class MainWindow(QMainWindow):
         )
         self.preview_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
         layout.addWidget(self.preview_label)
-        warning = QLabel(
-            "注意：HTTP 文档无位置反馈和按距离接口；距离/角度是按标定速度换算的开环估计。"
-        )
+        warning = QLabel("每组包含两个相反方向；HTTP 摇杆固定以 10 Hz 发送。")
         warning.setWordWrap(True)
         warning.setStyleSheet("color:#ffcc80; font:11px;")
         layout.addWidget(warning)
+        return group
+
+    def _build_trajectory_group(self) -> QGroupBox:
+        group = QGroupBox("实际 3D 轨迹")
+        group.setStyleSheet(self._group_style("#69f0ae"))
+        layout = QVBoxLayout(group)
+        self.trajectory_plot = TrajectoryPlot3D()
+        layout.addWidget(self.trajectory_plot, 1)
+        controls = QHBoxLayout()
+        hint = QLabel("绿线：实际位置　彩色轴：HTTP IMU 姿态")
+        hint.setStyleSheet("color:#a8b3bc; font:11px;")
+        controls.addWidget(hint)
+        controls.addStretch()
+        clear = QPushButton("清除轨迹")
+        clear.setStyleSheet(self._button_style("#455a64", "#546e7a", compact=True))
+        clear.clicked.connect(self._clear_trajectory)
+        controls.addWidget(clear)
+        layout.addLayout(controls)
         return group
 
     def _build_log_group(self) -> QGroupBox:
@@ -389,6 +368,7 @@ class MainWindow(QMainWindow):
                 self.address_edit.text().strip(),
                 self.client_name_edit.text(),
                 self.connection_type_combo.currentData(),
+                grpc_port=self.grpc_port_spin.value(),
             )
         except Exception as exc:
             QMessageBox.warning(self, "连接参数错误", str(exc))
@@ -398,6 +378,7 @@ class MainWindow(QMainWindow):
         self.address_edit.setEnabled(False)
         self.connection_type_combo.setEnabled(False)
         self.client_name_edit.setEnabled(False)
+        self.grpc_port_spin.setEnabled(False)
         self._append_log(f"[{self._time()}] [INFO] 正在连接 {self.address_edit.text().strip()}")
         self._worker.start()
 
@@ -409,11 +390,12 @@ class MainWindow(QMainWindow):
         except Exception as exc:
             QMessageBox.warning(self, "动作参数错误", str(exc))
             return
-        if command["duration"] > 120.0:
+        longest = max(segment["duration"] for segment in command["segments"])
+        if longest > 120.0:
             answer = QMessageBox.question(
                 self,
                 "确认长时间动作",
-                f"估算单次持续时间为 {command['duration']:.1f} 秒，是否继续？",
+                f"最长单方向持续时间为 {longest:.1f} 秒，是否继续？",
             )
             if answer != QMessageBox.Yes:
                 return
@@ -422,6 +404,7 @@ class MainWindow(QMainWindow):
         self.start_button.setEnabled(False)
         self.stop_button.setEnabled(True)
         self.progress_bar.setValue(0)
+        self.trajectory_plot.mark_start()
         self._worker.start_move(command)
 
     def _build_command(self) -> dict[str, Any]:
@@ -429,30 +412,22 @@ class MainWindow(QMainWindow):
         if not 0 <= index < len(self._action_configs):
             raise ValueError("请选择动作")
         config = self._action_configs[index]
-        kind = config["kind"]
-        if kind == "raw":
-            axes = {name: spin.value() for name, spin in config["spins"].items()}
-            duration = config["duration"].value()
-        else:
-            direction = config["direction"].currentData()
-            axes = direction_axes(direction, config["amplitude"].value())
-            if config["invert"].isChecked():
-                axes = {name: -value for name, value in axes.items()}
-            duration = scaled_duration(
-                config["target"].value(),
-                config["rate"].value(),
-                config["amplitude"].value(),
-            )
+        amplitude = config["amplitude"].value()
+        segments = []
+        for label, direction, duration_spin in config["segments"]:
+            segments.append({
+                "name": label,
+                **direction_axes(direction, amplitude),
+                "duration": duration_spin.value(),
+            })
         return {
             "name": config["title"],
-            **axes,
-            "duration": duration,
+            "segments": segments,
             "repetitions": self.repetition_spin.value(),
             "infinite": self.infinite_check.isChecked(),
             "settle_time": self.settle_spin.value(),
-            "rate_hz": self.rate_spin.value(),
-            "set_speed_ratio": self.speed_ratio_check.isChecked(),
-            "speed_ratio": self.speed_ratio_spin.value(),
+            "rate_hz": 10.0,
+            "prepare_action_id": self.prepare_action_combo.currentData(),
         }
 
     def _stop(self) -> None:
@@ -482,12 +457,19 @@ class MainWindow(QMainWindow):
         rpy = imu.get("rpy", [])
         if isinstance(rpy, (list, tuple)) and len(rpy) >= 3:
             try:
+                self._last_http_rpy = [float(value) for value in rpy[:3]]
                 degrees = [math.degrees(float(value)) for value in rpy[:3]]
                 self.rpy_label.setText(
                     f"r={degrees[0]:.1f}°  p={degrees[1]:.1f}°  y={degrees[2]:.1f}°"
                 )
             except (TypeError, ValueError):
                 self.rpy_label.setText(str(rpy))
+        self.gyro_label.setText(self._format_vector(imu.get("gyroscope"), "rad/s"))
+        self.accel_label.setText(self._format_vector(imu.get("accelerometer"), "m/s²"))
+        if self._last_position is not None:
+            self.trajectory_plot.update_imu_axes(
+                *self._last_position, *self._last_http_rpy
+            )
         bms = data.get("bms") if isinstance(data.get("bms"), dict) else {}
         battery = bms.get("battery_level", "—")
         health = bms.get("battery_health", "—")
@@ -504,6 +486,30 @@ class MainWindow(QMainWindow):
             else "color:#69f0ae; font:13px monospace;"
         )
         self.heartbeat_label.setText(self._time())
+
+    def _on_odom(self, data: dict[str, Any]) -> None:
+        pos = data.get("pos", [])
+        if not isinstance(pos, (list, tuple)) or len(pos) < 3:
+            return
+        try:
+            self._last_position = [float(value) for value in pos[:3]]
+        except (TypeError, ValueError):
+            return
+        x, y, z = self._last_position
+        self.position_label.setText(f"x={x:.3f} y={y:.3f} z={z:.3f} m")
+        self.trajectory_plot.add_point(x, y, z)
+        self.trajectory_plot.update_imu_axes(x, y, z, *self._last_http_rpy)
+
+    def _on_trajectory_status(self, ok: bool, detail: str) -> None:
+        self.trajectory_source_label.setText(detail)
+        self.trajectory_source_label.setStyleSheet(
+            "color:#69f0ae; font:13px monospace;" if ok
+            else "color:#ffb74d; font:13px monospace;"
+        )
+
+    def _clear_trajectory(self) -> None:
+        self.trajectory_plot.clear()
+        self._append_log(f"[{self._time()}] [INFO] 已清除轨迹")
 
     def _on_progress(
         self, cycle: int, total: int, stage: str, percent: int
@@ -545,6 +551,7 @@ class MainWindow(QMainWindow):
             self.address_edit.setEnabled(True)
             self.connection_type_combo.setEnabled(True)
             self.client_name_edit.setEnabled(True)
+            self.grpc_port_spin.setEnabled(True)
 
     def _append_log(self, message: str) -> None:
         self.log_edit.append(message)
@@ -567,6 +574,18 @@ class MainWindow(QMainWindow):
     @staticmethod
     def _time() -> str:
         return time.strftime("%H:%M:%S")
+
+    @staticmethod
+    def _format_vector(values: Any, unit: str) -> str:
+        if not isinstance(values, (list, tuple)) or len(values) < 3:
+            return "—"
+        try:
+            return (
+                f"x={float(values[0]):.3f} y={float(values[1]):.3f} "
+                f"z={float(values[2]):.3f} {unit}"
+            )
+        except (TypeError, ValueError):
+            return str(values)
 
     @staticmethod
     def _group_style(color: str) -> str:

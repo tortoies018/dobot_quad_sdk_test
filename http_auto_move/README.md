@@ -1,13 +1,15 @@
 # MH4 HTTP Auto Move
 
-这是 `auto_move` 的 HTTP 接口版本，不依赖 `dobot_quad` gRPC SDK。程序使用
-《MH4 HTTP接口定义》中的以下接口：
+这是 `auto_move` 的 HTTP 运动控制版本。摇杆、动作状态、急停和 IMU 全部通过
+《MH4 HTTP接口定义》下发或读取；只读 gRPC 用来获取 HTTP 没有提供的世界坐标，
+用于绘制实际 3D 轨迹。
 
 - `POST /connection/state`：声明客户端连接；
 - `GET /protocol/exchange`：以 5 Hz 获取状态并保持连接占用；
-- `POST /settings/movement/joystickControl`：以 2～50 Hz 发送摇杆值；
+- `POST /settings/movement/joystickControl`：以固定 10 Hz 发送带新毫秒
+  `timestamp` 的摇杆值；
+- `POST /settings/movement/action`：可选地在开始前进入 WALK/RL 等运动状态；
 - `POST /settings/emergencyStop`：触发或解除软急停；
-- `POST :22002/algs/settings/movement/speedRatio`：可选的算法速度比例设置。
 
 ## 启动
 
@@ -23,10 +25,12 @@ python3 -m http_auto_move.main
 python3 http_auto_move/main.py
 ```
 
-只需要项目已有的 `PySide6`；HTTP 客户端使用 Python 标准库。
+依赖项目已有的 `PySide6`、`pyqtgraph`、`PyOpenGL` 和 `dobot_quad`。
+HTTP 客户端本身使用 Python 标准库。
 
-接口文档给出的默认地址：
+当前机器狗地址和文档固定地址：
 
+- 当前机器狗：`10.30.12.196:22000`
 - AP：`192.168.1.6:22000`
 - 网线直连：`192.168.5.2:22000`
 
@@ -34,25 +38,39 @@ python3 http_auto_move/main.py
 
 1. 让机器人处在开阔、安全并可随时断电的位置。
 2. 先连接，确认右侧 `exchange` 心跳和急停状态持续更新。
-3. 用“原始摇杆”页签和较小数值（建议 2000～5000）短时验证正负方向。
-4. 如果方向相反，在自动动作页签勾选“反转该方向的摇杆正负号”。
-5. 实测满幅速度/角速度，填到“满幅标定速度”后再使用距离或角度动作。
+3. 首次使用建议把摇杆幅值设为 2000～5000、持续时间设为 0.5 秒。
+4. 选择前后来回、左右来回或左右旋转；一组会依次完成两个相反方向。
 
-当前默认映射采用常见屏幕摇杆坐标：
+连接方式默认使用“自动检测”：程序先读取 `/connection/type`，再把实际的
+`AP` 或 `Station` 写入 `/connection/state`。使用 `192.168.5.2` 网线地址时应显示
+`Station`，不要登记为 `AP`。
+
+当前默认映射来自点足 miniQuad 实机标定：
 
 | 动作 | HTTP 字段 | 默认值符号 |
 | --- | --- | --- |
-| 前进 / 后退 | `btn_move.y` | 负 / 正 |
+| 前进 / 后退 | `btn_move.y` | 正 / 负 |
 | 左移 / 右移 | `btn_move.x` | 负 / 正 |
 | 左转 / 右转 | `btn_turn.x` | 负 / 正 |
 
-## 与原 `auto_move` 的差异
+## 界面参数
 
-HTTP 文档没有按距离/角度执行的接口，也没有世界坐标或机身速度反馈。因此：
+- `摇杆幅值`：直接发送给 HTTP 接口，范围 500～32767，绝对值越大通常越快；
+- `两个持续时间`：分别控制一组中两个相反方向发送多久；
+- `执行组数`：完整双向动作重复多少组；
+- `动作间隔`：一个方向归零后，到下一个方向开始前的等待时间；
+- `运动状态`：开始前通过 HTTP 切换到 WALK、RL 或 FLYING_TROT；
+- HTTP 摇杆固定以 10 Hz 发送，不需要用户设置发送频率。
 
-- 距离和角度按 `目标 ÷ (满幅标定速度 × 摇杆幅值比例)` 换算持续时间；
-- 这是开环估算，会受地面、步态、电量和速度设置影响；
-- `exchange.imu` 只用于显示姿态，不能提供可靠的位置闭环或精度统计；
+程序不再显示“满幅标定速度”和“算法速度比例”。前者原本只是把距离换算成
+开环时间用的实测速度，后者是 22002 算法服务的全局速度设置，都不是
+`joystickControl` 请求的必需参数。
+
+## 轨迹与状态
+
+- 3D 轨迹的位置来自同一机器人 `:50051` 的只读 gRPC `pos_body`；
+- 3D 本体姿态轴以及界面的 RPY、陀螺仪、加速度均来自 HTTP
+  `exchange.imu`，不使用 gRPC IMU；
 - “摇杆归零”会中止当前动作并重复发送全零摇杆值；“急停”另外调用软急停接口。
 
 程序不会自动解除软急停。解除前请先确认现场安全。
@@ -62,4 +80,3 @@ HTTP 文档没有按距离/角度执行的接口，也没有世界坐标或机�
 ```bash
 python3 -m unittest discover -s http_auto_move/tests -v
 ```
-

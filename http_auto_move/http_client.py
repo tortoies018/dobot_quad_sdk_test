@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import json
+import time
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
@@ -25,14 +26,14 @@ def _clamp_stick(value: int) -> int:
 
 
 class MH4HttpClient:
-    """文档中 22000/22002 两组 MH4 HTTP 接口的同步客户端。"""
+    """文档中 22000 MH4 控制接口的同步客户端。"""
 
     def __init__(self, address: str, timeout: float = 1.5):
-        self.control_base, self.algorithm_base = self._normalise_address(address)
+        self.control_base = self._normalise_address(address)
         self.timeout = max(0.1, float(timeout))
 
     @staticmethod
-    def _normalise_address(address: str) -> tuple[str, str]:
+    def _normalise_address(address: str) -> str:
         value = address.strip()
         if not value:
             raise ValueError("HTTP 地址不能为空")
@@ -50,25 +51,22 @@ class MH4HttpClient:
         if ":" in host:  # IPv6 URL 需要方括号
             host = f"[{host}]"
         control_port = parsed.port or 22000
-        control = f"{parsed.scheme}://{host}:{control_port}"
-        algorithm = f"{parsed.scheme}://{host}:22002"
-        return control, algorithm
+        return f"{parsed.scheme}://{host}:{control_port}"
 
     def _request(
         self,
         method: str,
         path: str,
         payload: dict[str, Any] | None = None,
-        *,
-        algorithm: bool = False,
     ) -> Any:
-        base = self.algorithm_base if algorithm else self.control_base
         body = None
         headers = {"Accept": "application/json"}
         if payload is not None:
             body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
             headers["Content-Type"] = "application/json; charset=utf-8"
-        request = Request(f"{base}{path}", data=body, headers=headers, method=method)
+        request = Request(
+            f"{self.control_base}{path}", data=body, headers=headers, method=method
+        )
         try:
             with urlopen(request, timeout=self.timeout) as response:
                 raw = response.read()
@@ -119,6 +117,12 @@ class MH4HttpClient:
             raise MH4HttpError(f"连接状态返回格式错误: {result!r}")
         return result
 
+    def connection_type(self) -> str:
+        result = self._request("GET", "/connection/type")
+        if not isinstance(result, dict) or result.get("value") not in ("AP", "Station"):
+            raise MH4HttpError(f"连接方式返回格式错误: {result!r}")
+        return str(result["value"])
+
     def exchange(self) -> dict[str, Any]:
         result = self._request("GET", "/protocol/exchange")
         if not isinstance(result, dict):
@@ -135,6 +139,8 @@ class MH4HttpClient:
         payload = {
             "btn_move": {"x": _clamp_stick(move_x), "y": _clamp_stick(move_y)},
             "btn_turn": {"x": _clamp_stick(turn_x), "y": _clamp_stick(turn_y)},
+            # 实机端以毫秒时间戳判断指令是否新鲜；必须每次请求重新生成。
+            "timestamp": int(time.time() * 1000),
         }
         result = self._request(
             "POST", "/settings/movement/joystickControl", payload
@@ -144,19 +150,14 @@ class MH4HttpClient:
     def stop_joystick(self) -> dict[str, Any]:
         return self.joystick()
 
+    def movement_action(self, action_id: int) -> dict[str, Any]:
+        result = self._request(
+            "POST", "/settings/movement/action", {"id": int(action_id)}
+        )
+        return self._require_success(result, "切换运动状态")
+
     def emergency_stop(self, enabled: bool) -> dict[str, Any]:
         result = self._request(
             "POST", "/settings/emergencyStop", {"value": bool(enabled)}
         )
         return self._require_success(result, "软急停")
-
-    def set_speed_ratio(self, ratio: int) -> dict[str, Any]:
-        value = max(10, min(100, int(ratio)))
-        result = self._request(
-            "POST",
-            "/algs/settings/movement/speedRatio",
-            {"ratio": value},
-            algorithm=True,
-        )
-        return self._require_success(result, "速度比例")
-
