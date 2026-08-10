@@ -83,6 +83,7 @@ class MainWindow(QMainWindow):
         self._last_position: list[float] | None = None
         self._last_position_at = 0.0
         self._boundary_region: dict[str, Any] | None = None
+        self._boundary_points: list[list[float]] = []
         self._action_configs: list[dict[str, Any]] = []
         self._api_request_pending = False
         self._selected_api_endpoint: ApiEndpoint | None = None
@@ -129,7 +130,7 @@ class MainWindow(QMainWindow):
         form = QFormLayout(group)
 
         row = QHBoxLayout()
-        self.address_edit = QLineEdit("10.30.12.196:22000")
+        self.address_edit = QLineEdit("10.30.12.105:22000")
         self.address_edit.setPlaceholderText("例如 10.30.12.196:22000")
         self.address_edit.setStyleSheet(self._input_style())
         self.address_edit.setToolTip("当前机器狗：10.30.12.196:22000")
@@ -396,7 +397,7 @@ class MainWindow(QMainWindow):
         form.addRow("范围尺寸:", dimensions)
 
         buttons = QHBoxLayout()
-        self.boundary_set_button = QPushButton("以当前位置设定范围")
+        self.boundary_set_button = QPushButton("以当前位置设定矩形")
         self.boundary_set_button.setStyleSheet(
             self._button_style("#00796b", "#009688", compact=True)
         )
@@ -408,7 +409,37 @@ class MainWindow(QMainWindow):
         )
         self.boundary_clear_button.clicked.connect(self._clear_boundary)
         buttons.addWidget(self.boundary_clear_button)
-        form.addRow(buttons)
+        form.addRow("矩形围栏:", buttons)
+
+        point_buttons = QHBoxLayout()
+        self.boundary_point_add_button = QPushButton("记录当前位置")
+        self.boundary_point_add_button.setStyleSheet(
+            self._button_style("#6a1b9a", "#8e24aa", compact=True)
+        )
+        self.boundary_point_add_button.clicked.connect(self._add_boundary_point)
+        point_buttons.addWidget(self.boundary_point_add_button)
+        self.boundary_points_apply_button = QPushButton("生成多点范围")
+        self.boundary_points_apply_button.setStyleSheet(
+            self._button_style("#00796b", "#009688", compact=True)
+        )
+        self.boundary_points_apply_button.clicked.connect(
+            self._set_boundary_from_points
+        )
+        point_buttons.addWidget(self.boundary_points_apply_button)
+        self.boundary_points_clear_button = QPushButton("清除标点")
+        self.boundary_points_clear_button.setStyleSheet(
+            self._button_style("#455a64", "#607d8b", compact=True)
+        )
+        self.boundary_points_clear_button.clicked.connect(
+            self._clear_boundary_points
+        )
+        point_buttons.addWidget(self.boundary_points_clear_button)
+        form.addRow("多点围栏:", point_buttons)
+
+        self.boundary_points_label = QLabel("未记录标点（至少需要 3 个）")
+        self.boundary_points_label.setWordWrap(True)
+        self.boundary_points_label.setStyleSheet("color:#ce93d8; font:11px monospace;")
+        form.addRow("标点状态:", self.boundary_points_label)
 
         self.boundary_status_label = QLabel("未设置：自动动作不限制范围")
         self.boundary_status_label.setWordWrap(True)
@@ -419,7 +450,8 @@ class MainWindow(QMainWindow):
         form.addRow(self.boundary_status_label)
         note = QLabel(
             "设定后仍使用上方动作、幅值、持续时间和执行组数；仅在越界时停止"
-            "当前方向并自动插入回中心指令。"
+            "当前方向并自动插入回中心指令。多点围栏会自动取所有标点的凸包，"
+            "标点顺序不限。"
         )
         note.setWordWrap(True)
         note.setStyleSheet("color:#ffcc80; font:11px;")
@@ -488,7 +520,7 @@ class MainWindow(QMainWindow):
         controls = QHBoxLayout()
         hint = QLabel(
             "绿线：实际轨迹　彩色轴：HTTP IMU　青框/黄点：限制范围/中心　"
-            "紫线：越界回中指令"
+            "紫点：围栏标点　紫线：越界回中指令"
         )
         hint.setStyleSheet("color:#a8b3bc; font:11px;")
         controls.addWidget(hint)
@@ -851,6 +883,8 @@ class MainWindow(QMainWindow):
             return
         if self._boundary_region is not None:
             self._clear_boundary(silent=True)
+        if self._boundary_points:
+            self._clear_boundary_points(silent=True)
         self._last_position = None
         self._last_position_at = 0.0
         self._last_http_rpy_at = 0.0
@@ -957,7 +991,11 @@ class MainWindow(QMainWindow):
 
     def _resize_existing_boundary(self, _value: float) -> None:
         region = self._boundary_region
-        if region is None or self._moving:
+        if (
+            region is None
+            or region.get("kind") == "polygon"
+            or self._moving
+        ):
             return
         self._boundary_region = self._worker._boundary_geometry(
             list(region["center"]),
@@ -973,11 +1011,19 @@ class MainWindow(QMainWindow):
             return
         center = region["center"]
         self.trajectory_plot.set_boundary_region(region)
-        self.boundary_status_label.setText(
-            f"限制已启用：中心 x={center[0]:.3f} y={center[1]:.3f} m；"
-            f"长={region['length']:.2f} m，宽={region['width']:.2f} m；"
-            f"方向={math.degrees(region['yaw']):.1f}°"
-        )
+        if region.get("kind") == "polygon":
+            self.boundary_status_label.setText(
+                f"多点限制已启用：{len(region['corners'])} 个凸包顶点；"
+                f"中心 x={center[0]:.3f} y={center[1]:.3f} m；"
+                f"跨度 x={region['length']:.2f} m y={region['width']:.2f} m"
+            )
+        else:
+            self.boundary_status_label.setText(
+                f"矩形限制已启用：中心 x={center[0]:.3f} "
+                f"y={center[1]:.3f} m；长={region['length']:.2f} m，"
+                f"宽={region['width']:.2f} m；"
+                f"方向={math.degrees(region['yaw']):.1f}°"
+            )
         self.boundary_status_label.setStyleSheet(
             "color:#80deea; background:#25272b; border:1px solid #397680; "
             "border-radius:4px; padding:6px; font:11px monospace;"
@@ -994,6 +1040,81 @@ class MainWindow(QMainWindow):
         )
         if not silent:
             self._append_log(f"[{self._time()}] [BOUNDARY] 已取消运动范围限制")
+        self._set_connected_ui(self._connected)
+
+    def _add_boundary_point(self) -> None:
+        if not self._connected or self._moving:
+            return
+        now = time.monotonic()
+        if self._last_position is None or now - self._last_position_at > 1.0:
+            QMessageBox.warning(
+                self,
+                "无法记录标点",
+                "需要最近 1 秒内的 gRPC 位置，请先确认轨迹数据正在更新。",
+            )
+            return
+        point = list(self._last_position[:3])
+        for index, existing in enumerate(self._boundary_points, start=1):
+            if math.hypot(point[0] - existing[0], point[1] - existing[1]) < 0.05:
+                QMessageBox.information(
+                    self,
+                    "标点过近",
+                    f"当前位置与第 {index} 个标点相距不足 0.05 m，请移动后再记录。",
+                )
+                return
+        if len(self._boundary_points) >= 100:
+            QMessageBox.warning(self, "标点数量已满", "最多记录 100 个围栏标点。")
+            return
+        self._boundary_points.append(point)
+        self._show_boundary_points()
+        self._append_log(
+            f"[{self._time()}] [BOUNDARY] 已记录第 {len(self._boundary_points)} 个标点: "
+            f"({point[0]:.3f},{point[1]:.3f},{point[2]:.3f})m"
+        )
+        self._set_connected_ui(self._connected)
+
+    def _set_boundary_from_points(self) -> None:
+        if not self._connected or self._moving:
+            return
+        try:
+            region = self._worker._polygon_boundary_geometry(
+                copy.deepcopy(self._boundary_points)
+            )
+        except Exception as exc:
+            QMessageBox.warning(self, "无法生成多点范围", str(exc))
+            return
+        self._boundary_region = region
+        self._show_boundary()
+        self._append_log(
+            f"[{self._time()}] [BOUNDARY] 已从 {len(self._boundary_points)} 个标点"
+            f"生成多点范围: 凸包顶点={len(region['corners'])}，"
+            f"中心=({region['center'][0]:.3f},{region['center'][1]:.3f})m"
+        )
+        self._set_connected_ui(self._connected)
+
+    def _show_boundary_points(self) -> None:
+        count = len(self._boundary_points)
+        self.trajectory_plot.set_boundary_points(self._boundary_points)
+        if count < 3:
+            self.boundary_points_label.setText(
+                f"已记录 {count} 个标点，还需要 {3 - count} 个"
+            )
+        else:
+            self.boundary_points_label.setText(
+                f"已记录 {count} 个标点，可以生成多点范围"
+            )
+
+    def _clear_boundary_points(
+        self, _checked: bool = False, *, silent: bool = False
+    ) -> None:
+        count = len(self._boundary_points)
+        self._boundary_points.clear()
+        self.trajectory_plot.set_boundary_points(None)
+        self.boundary_points_label.setText("未记录标点（至少需要 3 个）")
+        if count and not silent:
+            self._append_log(
+                f"[{self._time()}] [BOUNDARY] 已清除 {count} 个围栏标点"
+            )
         self._set_connected_ui(self._connected)
 
     def _stop(self) -> None:
@@ -1087,6 +1208,7 @@ class MainWindow(QMainWindow):
         self.trajectory_plot.clear()
         if self._boundary_region is not None:
             self._show_boundary()
+        self._show_boundary_points()
         self._append_log(f"[{self._time()}] [INFO] 已清除轨迹")
 
     def _on_finished(self, message: str) -> None:
@@ -1106,6 +1228,13 @@ class MainWindow(QMainWindow):
         self.boundary_set_button.setEnabled(connected and not self._moving)
         self.boundary_clear_button.setEnabled(
             not self._moving and self._boundary_region is not None
+        )
+        self.boundary_point_add_button.setEnabled(connected and not self._moving)
+        self.boundary_points_apply_button.setEnabled(
+            connected and not self._moving and len(self._boundary_points) >= 3
+        )
+        self.boundary_points_clear_button.setEnabled(
+            not self._moving and bool(self._boundary_points)
         )
         self.boundary_length_spin.setEnabled(not self._moving)
         self.boundary_width_spin.setEnabled(not self._moving)

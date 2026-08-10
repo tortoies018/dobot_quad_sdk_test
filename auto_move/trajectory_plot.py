@@ -40,6 +40,7 @@ COLOR_COMMAND_HEADING = np.array([0.0, 0.72, 1.0, 1.0], dtype=np.float32)
 COLOR_COMMAND_ARC = np.array([1.0, 0.85, 0.05, 1.0], dtype=np.float32)
 COLOR_BOUNDARY = np.array([0.0, 0.75, 0.95, 1.0], dtype=np.float32)
 COLOR_BOUNDARY_CENTER = (1.0, 0.82, 0.1, 1.0)
+COLOR_BOUNDARY_VERTEX = (0.75, 0.15, 0.95, 1.0)
 
 
 def _repeat_color(color, n):
@@ -107,7 +108,7 @@ class TrajectoryPlot3D(gl.GLViewWidget):
         self._ideal_arrows = gl.GLLinePlotItem(mode="lines", width=2, glOptions='translucent')
         self.addItem(self._ideal_arrows)
 
-        # 自动来回动作的安全范围：青色长方形和黄色中心点。
+        # 自动来回动作的安全范围：青色轮廓、黄色中心点和紫色人工标点。
         self._boundary_outline = gl.GLLinePlotItem(
             mode="line_strip", width=4, antialias=True, glOptions='translucent')
         self.addItem(self._boundary_outline)
@@ -117,6 +118,9 @@ class TrajectoryPlot3D(gl.GLViewWidget):
         self._boundary_cross = gl.GLLinePlotItem(
             mode="lines", width=3, glOptions='translucent')
         self.addItem(self._boundary_cross)
+        self._boundary_vertices = gl.GLScatterPlotItem(
+            color=COLOR_BOUNDARY_VERTEX, size=11)
+        self.addItem(self._boundary_vertices)
 
         # 当前正在执行的指令：紫色剩余路径、蓝色当前朝向、黄色转向弧。
         self._command_line = gl.GLLinePlotItem(
@@ -262,11 +266,12 @@ class TrajectoryPlot3D(gl.GLViewWidget):
         self.set_ideal_path(None)
         self.set_current_command(None)
         self.set_boundary_region(None)
+        self.set_boundary_points(None)
         self._update()
         self._reset_camera()
 
     def set_boundary_region(self, region):
-        """显示自动动作的长方形限制范围。"""
+        """显示自动动作的矩形或多点限制范围。"""
         empty = np.zeros((0, 3), dtype=np.float32)
         if not region:
             self._boundary_outline.setData(
@@ -282,7 +287,7 @@ class TrajectoryPlot3D(gl.GLViewWidget):
             corners = np.array(region["corners"], dtype=np.float32)[:, :3]
         except (KeyError, TypeError, ValueError, IndexError):
             return
-        if len(center) != 3 or len(corners) != 4:
+        if len(center) != 3 or len(corners) < 3:
             return
         outline = np.vstack((corners, corners[0]))
         outline[:, 2] = 0.025
@@ -293,13 +298,11 @@ class TrajectoryPlot3D(gl.GLViewWidget):
         )
         self._boundary_center.setData(pos=center_floor.reshape(1, 3))
 
-        cross_size = max(
-            0.08,
-            min(
-                float(np.linalg.norm(corners[0, :2] - corners[1, :2])),
-                float(np.linalg.norm(corners[1, :2] - corners[2, :2])),
-            ) * 0.12,
-        )
+        edge_lengths = [
+            float(np.linalg.norm(start[:2] - end[:2]))
+            for start, end in zip(corners, np.roll(corners, -1, axis=0))
+        ]
+        cross_size = max(0.08, min(edge_lengths) * 0.12)
         yaw = float(region.get("yaw", 0.0))
         forward = np.array([math.cos(yaw), math.sin(yaw), 0.0], dtype=np.float32)
         left = np.array([-math.sin(yaw), math.cos(yaw), 0.0], dtype=np.float32)
@@ -312,6 +315,22 @@ class TrajectoryPlot3D(gl.GLViewWidget):
         self._boundary_cross.setData(
             pos=cross, color=_repeat_color(COLOR_BOUNDARY, len(cross))
         )
+
+    def set_boundary_points(self, points):
+        """显示用户在机器狗当前位置记录的多点围栏标点。"""
+        empty = np.zeros((0, 3), dtype=np.float32)
+        if not points:
+            self._boundary_vertices.setData(pos=empty)
+            return
+        try:
+            vertices = np.array(points, dtype=np.float32)[:, :3]
+        except (TypeError, ValueError, IndexError):
+            return
+        if vertices.ndim != 2 or vertices.shape[1] != 3:
+            return
+        vertices = vertices.copy()
+        vertices[:, 2] = 0.055
+        self._boundary_vertices.setData(pos=vertices)
 
     def set_ideal_path(self, points):
         """设置指令轨迹；折线、目标点和箭头共同显示每段移动效果。"""

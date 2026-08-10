@@ -218,6 +218,48 @@ class WorkerSequenceTest(unittest.TestCase):
             HttpAutoMoveWorker._boundary_outside([0.0, 2.01, 0.0], boundary)
         )
 
+    def test_polygon_boundary_uses_convex_hull_and_area_centroid(self):
+        boundary = HttpAutoMoveWorker._polygon_boundary_geometry([
+            [2.0, 1.0, 0.3],
+            [0.0, 0.0, 0.3],
+            [1.0, 0.5, 0.3],  # 内部点不应成为边界顶点
+            [0.0, 1.0, 0.3],
+            [2.0, 0.0, 0.3],
+        ])
+        self.assertEqual(boundary["kind"], "polygon")
+        self.assertEqual(len(boundary["corners"]), 4)
+        self.assertAlmostEqual(boundary["center"][0], 1.0)
+        self.assertAlmostEqual(boundary["center"][1], 0.5)
+        self.assertAlmostEqual(boundary["length"], 2.0)
+        self.assertAlmostEqual(boundary["width"], 1.0)
+
+    def test_polygon_boundary_detection_and_validation(self):
+        boundary = HttpAutoMoveWorker._polygon_boundary_geometry([
+            [0.0, 0.0, 0.0],
+            [2.0, 0.0, 0.0],
+            [1.0, 2.0, 0.0],
+        ])
+        self.assertFalse(
+            HttpAutoMoveWorker._boundary_outside([1.0, 0.5, 0.0], boundary)
+        )
+        self.assertFalse(
+            HttpAutoMoveWorker._boundary_outside([1.0, 2.0, 0.0], boundary)
+        )
+        self.assertTrue(
+            HttpAutoMoveWorker._boundary_outside([1.9, 1.5, 0.0], boundary)
+        )
+        validated = HttpAutoMoveWorker._validated_boundary(boundary)
+        self.assertEqual(validated["kind"], "polygon")
+        self.assertEqual(len(validated["corners"]), 3)
+
+    def test_polygon_boundary_rejects_degenerate_points(self):
+        with self.assertRaisesRegex(ValueError, "同一直线"):
+            HttpAutoMoveWorker._polygon_boundary_geometry([
+                [0.0, 0.0, 0.0],
+                [1.0, 1.0, 0.0],
+                [2.0, 2.0, 0.0],
+            ])
+
     def test_drive_stops_before_command_when_already_outside_boundary(self):
         worker = HttpAutoMoveWorker()
         client = _FakeClient()

@@ -349,11 +349,20 @@ class HttpAutoMoveWorker(QThread):
             )
             if boundary is not None:
                 center = boundary["center"]
-                self._log(
-                    "BOUNDARY",
-                    f"范围限制已启用: 中心=({center[0]:.3f},{center[1]:.3f})m，"
-                    f"长={boundary['length']:.2f}m，宽={boundary['width']:.2f}m",
-                )
+                if boundary.get("kind") == "polygon":
+                    self._log(
+                        "BOUNDARY",
+                        f"多点范围限制已启用: {len(boundary['corners'])} 个边界点，"
+                        f"中心=({center[0]:.3f},{center[1]:.3f})m",
+                    )
+                else:
+                    self._log(
+                        "BOUNDARY",
+                        f"矩形范围限制已启用: "
+                        f"中心=({center[0]:.3f},{center[1]:.3f})m，"
+                        f"长={boundary['length']:.2f}m，"
+                        f"宽={boundary['width']:.2f}m",
+                    )
             cycle = 0
             failure = ""
             while self._alive.is_set() and not self._stop_motion.is_set():
@@ -618,11 +627,100 @@ class HttpAutoMoveWorker(QThread):
                 cz,
             ])
         return {
+            "kind": "rectangle",
             "center": [cx, cy, cz],
             "corners": corners,
             "length": float(length),
             "width": float(width),
             "yaw": float(yaw),
+        }
+
+    @staticmethod
+    def _convex_hull(points: list[list[float]]) -> list[list[float]]:
+        """返回按逆时针排列的 XY 凸包，忽略相同 XY 的重复点。"""
+        unique: dict[tuple[float, float], list[float]] = {}
+        for point in points:
+            unique[(float(point[0]), float(point[1]))] = [
+                float(point[0]), float(point[1]), float(point[2])
+            ]
+        ordered = [unique[key] for key in sorted(unique)]
+        if len(ordered) < 3:
+            raise ValueError("多点范围至少需要 3 个不同位置")
+
+        def cross(
+            origin: list[float], first: list[float], second: list[float]
+        ) -> float:
+            return (
+                (first[0] - origin[0]) * (second[1] - origin[1])
+                - (first[1] - origin[1]) * (second[0] - origin[0])
+            )
+
+        lower: list[list[float]] = []
+        for point in ordered:
+            while len(lower) >= 2 and cross(lower[-2], lower[-1], point) <= 0.0:
+                lower.pop()
+            lower.append(point)
+        upper: list[list[float]] = []
+        for point in reversed(ordered):
+            while len(upper) >= 2 and cross(upper[-2], upper[-1], point) <= 0.0:
+                upper.pop()
+            upper.append(point)
+        hull = lower[:-1] + upper[:-1]
+        if len(hull) < 3:
+            raise ValueError("多点范围的标点不能全部位于同一直线")
+        return hull
+
+    @classmethod
+    def _polygon_boundary_geometry(
+        cls, points: list[list[float]]
+    ) -> dict[str, Any]:
+        if not isinstance(points, (list, tuple)) or not 3 <= len(points) <= 100:
+            raise ValueError("多点范围需要 3～100 个位置点")
+        values: list[list[float]] = []
+        try:
+            for point in points:
+                if not isinstance(point, (list, tuple)) or len(point) < 3:
+                    raise ValueError("多点范围含无效位置点")
+                value = [float(item) for item in point[:3]]
+                if not all(math.isfinite(item) for item in value):
+                    raise ValueError("多点范围含非有限数值")
+                values.append(value)
+        except (TypeError, ValueError) as exc:
+            if isinstance(exc, ValueError) and str(exc).startswith("多点范围"):
+                raise
+            raise ValueError("多点范围含无效位置点") from exc
+
+        hull = cls._convex_hull(values)
+        twice_area = 0.0
+        centroid_x = 0.0
+        centroid_y = 0.0
+        for start, end in zip(hull, hull[1:] + hull[:1]):
+            edge_cross = start[0] * end[1] - end[0] * start[1]
+            twice_area += edge_cross
+            centroid_x += (start[0] + end[0]) * edge_cross
+            centroid_y += (start[1] + end[1]) * edge_cross
+        area = abs(twice_area) / 2.0
+        if area < 0.01:
+            raise ValueError("多点范围面积过小，请扩大标点间距")
+        centroid_x /= 3.0 * twice_area
+        centroid_y /= 3.0 * twice_area
+        center_z = sum(point[2] for point in hull) / len(hull)
+        min_x = min(point[0] for point in hull)
+        max_x = max(point[0] for point in hull)
+        min_y = min(point[1] for point in hull)
+        max_y = max(point[1] for point in hull)
+        length = max_x - min_x
+        width = max_y - min_y
+        if length > 50.0 or width > 50.0:
+            raise ValueError("多点范围的 XY 跨度不能超过 50 m")
+        return {
+            "kind": "polygon",
+            "center": [centroid_x, centroid_y, center_z],
+            "corners": hull,
+            # 保留跨度供回中心容差和超时估算使用。
+            "length": length,
+            "width": width,
+            "yaw": 0.0,
         }
 
     @classmethod
@@ -631,6 +729,8 @@ class HttpAutoMoveWorker(QThread):
             return None
         if not isinstance(raw, dict):
             raise ValueError("运动范围参数格式错误")
+        if raw.get("kind") == "polygon":
+            return cls._polygon_boundary_geometry(raw.get("corners"))
         center = raw.get("center")
         if not isinstance(center, (list, tuple)) or len(center) < 3:
             raise ValueError("运动范围缺少中心坐标")
@@ -664,6 +764,20 @@ class HttpAutoMoveWorker(QThread):
     def _boundary_outside(
         cls, position: list[float], boundary: dict[str, Any]
     ) -> bool:
+        if boundary.get("kind") == "polygon":
+            x = float(position[0])
+            y = float(position[1])
+            corners = boundary["corners"]
+            for start, end in zip(corners, corners[1:] + corners[:1]):
+                edge_cross = (
+                    (float(end[0]) - float(start[0]))
+                    * (y - float(start[1]))
+                    - (float(end[1]) - float(start[1]))
+                    * (x - float(start[0]))
+                )
+                if edge_cross < -1e-9:
+                    return True
+            return False
         forward, left = cls._boundary_local_position(position, boundary)
         return (
             abs(forward) > float(boundary["length"]) / 2.0
