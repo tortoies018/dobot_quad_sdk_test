@@ -309,6 +309,7 @@ class MainWindow(QMainWindow):
             "左右旋转", "一组：左转 → 右转",
             ("左转", "rotate_left"), ("右转", "rotate_right"),
         )
+        self._add_random_patrol_tab()
         layout.addWidget(self.tabs)
         return group
 
@@ -339,6 +340,35 @@ class MainWindow(QMainWindow):
             ),
         })
         self.tabs.addTab(tab, title)
+
+    def _add_random_patrol_tab(self) -> None:
+        tab = QWidget()
+        form = QFormLayout(tab)
+        form.addRow(self._intro(
+            "必须先设置矩形或多点围栏。每段先从随机候选中选择尽量远的目标，"
+            "原地转向目标后向前移动设定长度；执行组数表示巡逻路段数量。"
+        ))
+        speed = self._stick_spin()
+        speed.setValue(5000)
+        speed.setSuffix(" 摇杆")
+        speed.setToolTip("转向和向前移动使用的 HTTP 摇杆幅值")
+        form.addRow("巡逻速度:", speed)
+        segment_length = self._double_spin(0.1, 20.0, 1.0, " m", 2, 0.1)
+        segment_length.setToolTip("每次转向完成后计划向前移动的距离")
+        form.addRow("每段长度:", segment_length)
+        yaw_deadband = self._double_spin(1.0, 30.0, 5.0, " °", 1, 0.5)
+        yaw_deadband.setToolTip(
+            "转向结束后的允许偏航误差；首次超时且误差超过此值时补转一次"
+        )
+        form.addRow("偏航误差死区:", yaw_deadband)
+        self._action_configs.append({
+            "kind": "random_patrol",
+            "title": "范围内分段随机巡逻",
+            "speed": speed,
+            "segment_length": segment_length,
+            "yaw_deadband": yaw_deadband,
+        })
+        self.tabs.addTab(tab, "随机巡逻")
 
     def _build_common_group(self) -> QGroupBox:
         group = QGroupBox("执行参数")
@@ -916,15 +946,17 @@ class MainWindow(QMainWindow):
         except Exception as exc:
             QMessageBox.warning(self, "动作参数错误", str(exc))
             return
-        longest = max(segment["duration"] for segment in command["segments"])
-        if longest > 120.0:
-            answer = QMessageBox.question(
-                self,
-                "确认长时间动作",
-                f"最长单方向持续时间为 {longest:.1f} 秒，是否继续？",
-            )
-            if answer != QMessageBox.Yes:
-                return
+        if command.get("mode") != "random_patrol":
+            longest = max(segment["duration"] for segment in command["segments"])
+            long_action_text = f"最长单方向持续时间为 {longest:.1f} 秒，是否继续？"
+            if longest > 120.0:
+                answer = QMessageBox.question(
+                    self,
+                    "确认长时间动作",
+                    long_action_text,
+                )
+                if answer != QMessageBox.Yes:
+                    return
         self._moving = True
         self._set_connected_ui(True)
         self.start_button.setEnabled(False)
@@ -937,6 +969,24 @@ class MainWindow(QMainWindow):
         if not 0 <= index < len(self._action_configs):
             raise ValueError("请选择动作")
         config = self._action_configs[index]
+        common = {
+            "repetitions": self.repetition_spin.value(),
+            "infinite": self.infinite_check.isChecked(),
+            "settle_time": self.settle_spin.value(),
+            "prepare_action_id": self.prepare_action_combo.currentData(),
+            "boundary": copy.deepcopy(self._boundary_region),
+        }
+        if config.get("kind") == "random_patrol":
+            if self._boundary_region is None:
+                raise ValueError("随机巡逻必须先设置矩形或多点运动范围")
+            return {
+                **common,
+                "mode": "random_patrol",
+                "name": config["title"],
+                "speed": config["speed"].value(),
+                "segment_length": config["segment_length"].value(),
+                "yaw_deadband": config["yaw_deadband"].value(),
+            }
         amplitude = config["amplitude"].value()
         segments = []
         for label, direction, duration_spin in config["segments"]:
@@ -946,14 +996,10 @@ class MainWindow(QMainWindow):
                 "duration": duration_spin.value(),
             })
         return {
+            **common,
             "name": config["title"],
             "segments": segments,
-            "repetitions": self.repetition_spin.value(),
-            "infinite": self.infinite_check.isChecked(),
-            "settle_time": self.settle_spin.value(),
             "rate_hz": 10.0,
-            "prepare_action_id": self.prepare_action_combo.currentData(),
-            "boundary": copy.deepcopy(self._boundary_region),
         }
 
     def _set_boundary_from_current_pose(self) -> None:

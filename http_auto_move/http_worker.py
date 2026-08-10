@@ -5,6 +5,7 @@ from __future__ import annotations
 import math
 import json
 import queue
+import random
 import threading
 import time
 from typing import Any
@@ -24,6 +25,9 @@ class HttpAutoMoveWorker(QThread):
     _POSE_MAX_AGE = 1.0
     _RETURN_POSE_RECOVERY_TIMEOUT = 3.0
     _RETURN_POSE_POLL_INTERVAL = 0.05
+    _RETURN_MAX_AMPLITUDE = 8000
+    _RETURN_MIN_AMPLITUDE = 500
+    _RETURN_SLOW_RADIUS = 0.75
 
     connected = Signal(bool, str)
     exchange_data = Signal(dict)
@@ -55,6 +59,7 @@ class HttpAutoMoveWorker(QThread):
         self._latest_position_at = 0.0
         self._latest_http_rpy: list[float] | None = None
         self._latest_http_rpy_at = 0.0
+        self._random = random.Random()
 
     def configure(
         self,
@@ -302,6 +307,9 @@ class HttpAutoMoveWorker(QThread):
             self.trajectory_status.emit(False, "gRPC 轨迹采样已停止")
 
     def _execute(self, command: dict[str, Any]) -> None:
+        if command.get("mode") == "random_patrol":
+            self._execute_random_patrol(command)
+            return
         client = self._client
         if client is None:
             self.finished_ok.emit("执行失败：HTTP 客户端未连接")
@@ -476,6 +484,267 @@ class HttpAutoMoveWorker(QThread):
         except Exception as exc:
             self._log("ERROR", f"动作执行失败: {exc}")
             self.finished_ok.emit(f"动作执行失败: {exc}")
+        finally:
+            self._safe_stop(client)
+            self.recovery_command.emit(None)
+
+    def _execute_random_patrol(self, command: dict[str, Any]) -> None:
+        client = self._client
+        if client is None:
+            self.finished_ok.emit("执行失败：HTTP 客户端未连接")
+            return
+
+        failure = ""
+        try:
+            boundary = self._validated_boundary(command.get("boundary"))
+            if boundary is None:
+                raise ValueError("随机巡逻必须先设置并启用运动范围")
+            speed = max(500, min(32767, int(command.get("speed", 5000))))
+            segment_length = max(
+                0.1, min(20.0, float(command.get("segment_length", 1.0)))
+            )
+            yaw_deadband_degrees = max(
+                1.0, min(30.0, float(command.get("yaw_deadband", 5.0)))
+            )
+            repetitions = max(1, int(command.get("repetitions", 1)))
+            infinite = bool(command.get("infinite", False))
+            settle_time = max(0.0, float(command.get("settle_time", 0.3)))
+            safety_margin = 0.15
+            position_tolerance = max(0.02, min(0.08, segment_length * 0.10))
+            yaw_tolerance = math.radians(yaw_deadband_degrees)
+
+            # 在下发任何动作前验证围栏能否容纳所选安全边距。
+            self._inset_boundary_vertices(boundary, safety_margin)
+            prepare_action_id = command.get("prepare_action_id")
+            if prepare_action_id is not None:
+                self._log(
+                    "HTTP",
+                    f"POST {client.control_base}/settings/movement/action "
+                    f"id={int(prepare_action_id)}",
+                )
+                client.movement_action(int(prepare_action_id))
+                if self._stop_motion.wait(1.0):
+                    self.finished_ok.emit("动作已停止")
+                    return
+
+            self._log(
+                "INFO",
+                f"启动范围内分段随机巡逻: 路段数="
+                f"{'无限' if infinite else repetitions}，速度={speed}，"
+                f"每段长度={segment_length:.2f}m，"
+                f"偏航死区=±{yaw_deadband_degrees:.1f}°",
+            )
+            segment = 0
+            while self._alive.is_set() and not self._stop_motion.is_set():
+                segment += 1
+                if not infinite and segment > repetitions:
+                    break
+
+                pose_status, pose = self._motion_pose(
+                    client, "随机巡逻规划"
+                )
+                if pose_status != "ready":
+                    if pose_status != "stopped":
+                        failure = f"随机巡逻规划失败（{pose_status}）"
+                    break
+                current = pose["pos"]
+                if self._boundary_outside(current, boundary):
+                    self._log(
+                        "WARN",
+                        "规划巡逻路段前检测到越界；已归零，插入回中心指令",
+                    )
+                    returned, center_error = self._return_to_boundary_center(
+                        client, boundary, speed
+                    )
+                    if returned != "reached":
+                        if returned != "stopped":
+                            failure = (
+                                f"随机巡逻越界回中心失败（{returned}，"
+                                f"中心误差={center_error:.4f}m）"
+                            )
+                        break
+                    segment -= 1
+                    continue
+
+                far_target, far_distance = self._distant_boundary_target(
+                    boundary,
+                    safety_margin,
+                    current_position=current,
+                    rng=self._random,
+                )
+                if far_distance <= position_tolerance:
+                    failure = (
+                        "安全内缩后的巡逻区域过小，无法生成有效路段；"
+                        "请扩大围栏"
+                    )
+                    break
+                total_text = "∞" if infinite else str(repetitions)
+                target_yaw = math.atan2(
+                    far_target[1] - float(current[1]),
+                    far_target[0] - float(current[0]),
+                )
+                self._log(
+                    "PATROL",
+                    f"▶ 巡逻路段 {segment}/{total_text}: 远目标="
+                    f"({far_target[0]:.3f},{far_target[1]:.3f})m，"
+                    f"候选距离={far_distance:.3f}m，"
+                    f"目标航向={math.degrees(target_yaw):.1f}°",
+                )
+
+                turn_result, yaw_error = self._turn_to_patrol_target(
+                    client,
+                    boundary,
+                    far_target,
+                    speed,
+                    yaw_tolerance,
+                    timeout=20.0,
+                )
+                self.recovery_command.emit(None)
+                if (
+                    turn_result == "timeout"
+                    and math.isfinite(yaw_error)
+                    and abs(yaw_error) > yaw_deadband_degrees
+                    and self._alive.is_set()
+                    and not self._stop_motion.is_set()
+                ):
+                    self._log(
+                        "WARN",
+                        f"巡逻路段 {segment}: 首次转向残差 "
+                        f"{yaw_error:+.2f}°，超过死区 "
+                        f"±{yaw_deadband_degrees:.1f}°；归零后补转一次",
+                    )
+                    if self._stop_motion.wait(0.2):
+                        break
+                    turn_result, yaw_error = self._turn_to_patrol_target(
+                        client,
+                        boundary,
+                        far_target,
+                        speed,
+                        yaw_tolerance,
+                        timeout=20.0,
+                    )
+                    self.recovery_command.emit(None)
+                    if turn_result == "reached":
+                        self._log(
+                            "MEASURE",
+                            f"巡逻路段 {segment} 补转完成: "
+                            f"偏航误差={yaw_error:+.2f}°",
+                        )
+                if turn_result == "outside":
+                    self._log(
+                        "WARN",
+                        "巡逻转向时检测到越界；已归零，插入回中心指令",
+                    )
+                    returned, center_error = self._return_to_boundary_center(
+                        client, boundary, speed
+                    )
+                    if returned != "reached":
+                        if returned != "stopped":
+                            failure = (
+                                f"随机巡逻越界回中心失败（{returned}，"
+                                f"中心误差={center_error:.4f}m）"
+                            )
+                        break
+                    segment -= 1
+                    continue
+                if turn_result == "stopped":
+                    break
+                if turn_result != "reached":
+                    failure = (
+                        f"巡逻路段 {segment} 转向失败"
+                        f"（{turn_result}，偏航误差={yaw_error:.2f}°）"
+                    )
+                    break
+
+                pose_status, pose = self._motion_pose(
+                    client, "巡逻路段起点采样"
+                )
+                if pose_status != "ready":
+                    if pose_status != "stopped":
+                        failure = f"巡逻路段起点采样失败（{pose_status}）"
+                    break
+                move_start = pose["pos"]
+                dx = far_target[0] - float(move_start[0])
+                dy = far_target[1] - float(move_start[1])
+                available_distance = math.hypot(dx, dy)
+                if available_distance <= position_tolerance:
+                    self._log("WARN", "转向后已接近远目标，重新规划本路段")
+                    segment -= 1
+                    continue
+                move_length = min(segment_length, available_distance)
+                heading = math.atan2(dy, dx)
+                endpoint = [
+                    float(move_start[0]) + math.cos(heading) * move_length,
+                    float(move_start[1]) + math.sin(heading) * move_length,
+                    float(move_start[2]),
+                ]
+                if move_length + 1e-6 < segment_length:
+                    self._log(
+                        "WARN",
+                        f"巡逻路段 {segment}: 围栏内可用直线距离仅 "
+                        f"{move_length:.3f}m，本段由 {segment_length:.3f}m "
+                        "安全缩短",
+                    )
+                move_timeout = min(
+                    600.0,
+                    max(10.0, move_length * 60000.0 / float(speed)),
+                )
+                move_result, traveled, endpoint_error = self._drive_patrol_segment(
+                    client,
+                    boundary,
+                    move_start,
+                    endpoint,
+                    speed,
+                    position_tolerance,
+                    move_timeout,
+                )
+                if move_result == "outside":
+                    self._log(
+                        "WARN",
+                        "巡逻前进时检测到越界；已归零，插入回中心指令",
+                    )
+                    returned, center_error = self._return_to_boundary_center(
+                        client, boundary, speed
+                    )
+                    if returned != "reached":
+                        if returned != "stopped":
+                            failure = (
+                                f"随机巡逻越界回中心失败（{returned}，"
+                                f"中心误差={center_error:.4f}m）"
+                            )
+                        break
+                    segment -= 1
+                    continue
+                if move_result == "stopped":
+                    break
+                if move_result != "reached":
+                    failure = (
+                        f"巡逻路段 {segment} 前进失败（{move_result}，"
+                        f"已移动={traveled:.3f}m）"
+                    )
+                    break
+                self._log(
+                    "MEASURE",
+                    f"巡逻路段 {segment} 完成: 设定={move_length:.3f}m，"
+                    f"实际平移={traveled:.3f}m，终点误差={endpoint_error:.3f}m",
+                )
+
+                has_more = infinite or segment < repetitions
+                if settle_time and has_more:
+                    self._log("PATROL", f"… 路段间停留 {settle_time:.1f}s")
+                    if self._stop_motion.wait(settle_time):
+                        break
+
+            stopped = self._stop_motion.is_set() or not self._alive.is_set()
+            if failure:
+                message = f"动作执行失败：{failure}"
+            else:
+                message = "动作已停止" if stopped else "随机巡逻完成"
+            self.finished_ok.emit(message)
+            self._log("ERROR" if failure else "INFO", message)
+        except Exception as exc:
+            self._log("ERROR", f"随机巡逻失败: {exc}")
+            self.finished_ok.emit(f"随机巡逻失败: {exc}")
         finally:
             self._safe_stop(client)
             self.recovery_command.emit(None)
@@ -723,6 +992,125 @@ class HttpAutoMoveWorker(QThread):
             "yaw": 0.0,
         }
 
+    @staticmethod
+    def _inset_boundary_vertices(
+        boundary: dict[str, Any], margin: float
+    ) -> list[list[float]]:
+        """按中心等比内缩凸围栏，使每条边至少留出指定距离。"""
+        center = boundary["center"]
+        corners = boundary["corners"]
+        if len(corners) < 3:
+            raise ValueError("运动范围至少需要 3 个边界点")
+        minimum_edge_distance = float("inf")
+        for start, end in zip(corners, corners[1:] + corners[:1]):
+            edge_x = float(end[0]) - float(start[0])
+            edge_y = float(end[1]) - float(start[1])
+            edge_length = math.hypot(edge_x, edge_y)
+            if edge_length <= 1e-9:
+                raise ValueError("运动范围含重复边界点")
+            center_cross = abs(
+                edge_x * (float(center[1]) - float(start[1]))
+                - edge_y * (float(center[0]) - float(start[0]))
+            )
+            minimum_edge_distance = min(
+                minimum_edge_distance, center_cross / edge_length
+            )
+        margin = max(0.0, float(margin))
+        if minimum_edge_distance <= margin + 1e-6:
+            raise ValueError(
+                f"巡逻安全边距 {margin:.2f}m 过大；当前范围中心到最近边界"
+                f"仅 {minimum_edge_distance:.2f}m"
+            )
+        scale = 1.0 - margin / minimum_edge_distance
+        return [[
+            float(center[0]) + (float(point[0]) - float(center[0])) * scale,
+            float(center[1]) + (float(point[1]) - float(center[1])) * scale,
+            float(center[2]),
+        ] for point in corners]
+
+    @classmethod
+    def _random_boundary_target(
+        cls,
+        boundary: dict[str, Any],
+        margin: float,
+        *,
+        current_position: list[float] | tuple[float, ...] | None = None,
+        minimum_distance: float = 0.0,
+        rng: Any = random,
+    ) -> list[float]:
+        """在内缩后的凸围栏中按面积均匀抽取随机目标点。"""
+        vertices = cls._inset_boundary_vertices(boundary, margin)
+        center = [float(value) for value in boundary["center"][:3]]
+        triangles: list[tuple[list[float], list[float], float]] = []
+        total_area = 0.0
+        for start, end in zip(vertices, vertices[1:] + vertices[:1]):
+            area = abs(
+                (start[0] - center[0]) * (end[1] - center[1])
+                - (start[1] - center[1]) * (end[0] - center[0])
+            ) / 2.0
+            if area <= 1e-12:
+                continue
+            total_area += area
+            triangles.append((start, end, total_area))
+        if not triangles or total_area <= 1e-12:
+            raise ValueError("巡逻范围内缩后没有可用面积")
+
+        target = center
+        for _attempt in range(20):
+            selected = rng.random() * total_area
+            start, end, _limit = triangles[-1]
+            for candidate_start, candidate_end, limit in triangles:
+                if selected <= limit:
+                    start, end = candidate_start, candidate_end
+                    break
+            radial = math.sqrt(rng.random())
+            along = rng.random()
+            target = [
+                (1.0 - radial) * center[0]
+                + radial * (1.0 - along) * start[0]
+                + radial * along * end[0],
+                (1.0 - radial) * center[1]
+                + radial * (1.0 - along) * start[1]
+                + radial * along * end[1],
+                center[2],
+            ]
+            if (
+                current_position is None
+                or math.hypot(
+                    target[0] - float(current_position[0]),
+                    target[1] - float(current_position[1]),
+                ) >= max(0.0, float(minimum_distance))
+            ):
+                break
+        return target
+
+    @classmethod
+    def _distant_boundary_target(
+        cls,
+        boundary: dict[str, Any],
+        margin: float,
+        *,
+        current_position: list[float] | tuple[float, ...],
+        rng: Any = random,
+        candidate_count: int = 64,
+    ) -> tuple[list[float], float]:
+        """从多组随机候选中选择距当前位置最远的围栏内目标。"""
+        count = max(8, min(256, int(candidate_count)))
+        best_target: list[float] | None = None
+        best_distance = -1.0
+        for _index in range(count):
+            target = cls._random_boundary_target(boundary, margin, rng=rng)
+            distance = math.hypot(
+                target[0] - float(current_position[0]),
+                target[1] - float(current_position[1]),
+            )
+            if distance > best_distance:
+                best_target = target
+                best_distance = distance
+        if best_target is None:
+            raise ValueError("无法生成巡逻远目标")
+        return best_target, best_distance
+
     @classmethod
     def _validated_boundary(cls, raw: Any) -> dict[str, Any] | None:
         if raw is None:
@@ -795,10 +1183,25 @@ class HttpAutoMoveWorker(QThread):
             min(0.15, min(boundary["length"], boundary["width"]) * 0.08),
         )
         timeout = max(8.0, max(boundary["length"], boundary["width"]) * 12.0)
+        recovery_amplitude = max(
+            self._RETURN_MIN_AMPLITUDE,
+            min(self._RETURN_MAX_AMPLITUDE, int(amplitude)),
+        )
         try:
-            return self._drive_to_boundary_center(
-                client, boundary, amplitude, tolerance, timeout
+            result, error = self._drive_to_boundary_center(
+                client, boundary, recovery_amplitude, tolerance, timeout
             )
+            relaxed_tolerance = min(
+                0.20, max(tolerance + 0.03, tolerance * 1.25)
+            )
+            if result == "timeout" and error <= relaxed_tolerance:
+                self._log(
+                    "WARN",
+                    f"回中心已进入近中心缓冲区: 误差={error:.4f}m，"
+                    f"严格容差={tolerance:.4f}m，按完成处理",
+                )
+                return "reached", error
+            return result, error
         finally:
             self.recovery_command.emit(None)
 
@@ -810,7 +1213,190 @@ class HttpAutoMoveWorker(QThread):
         tolerance: float,
         timeout: float,
     ) -> tuple[str, float]:
-        center = boundary["center"]
+        return self._drive_to_world_target(
+            client,
+            boundary["center"],
+            amplitude,
+            tolerance,
+            timeout,
+            motion_label="回中心",
+        )
+
+    def _motion_pose(
+        self,
+        client: MH4HttpClient,
+        motion_label: str,
+    ) -> tuple[str, dict[str, Any]]:
+        pose = self._pose_snapshot()
+        now = time.monotonic()
+        unavailable = self._return_pose_unavailable(pose, now)
+        if unavailable is None:
+            return "ready", pose
+        status, detail = unavailable
+        self._log(
+            "WARN",
+            f"{motion_label}暂停: {detail}；已归零并等待数据恢复"
+            f"（最多 {self._RETURN_POSE_RECOVERY_TIMEOUT:.1f}s）",
+        )
+        self._safe_stop(client)
+        recovered_at = self._wait_for_pose_recovery(
+            self._RETURN_POSE_RECOVERY_TIMEOUT
+        )
+        if recovered_at is None:
+            if self._stop_motion.is_set() or not self._alive.is_set():
+                return "stopped", pose
+            return status, pose
+        self._log(
+            "INFO",
+            f"{motion_label}数据已恢复，暂停 {recovered_at - now:.2f}s 后继续",
+        )
+        return "ready", self._pose_snapshot()
+
+    def _turn_to_patrol_target(
+        self,
+        client: MH4HttpClient,
+        boundary: dict[str, Any],
+        target: list[float],
+        speed: int,
+        tolerance: float,
+        timeout: float,
+    ) -> tuple[str, float]:
+        started = time.monotonic()
+        last_error = float("inf")
+        while self._alive.is_set() and not self._stop_motion.is_set():
+            pose_status, pose = self._motion_pose(client, "巡逻转向")
+            if pose_status != "ready":
+                return pose_status, last_error
+            position = pose["pos"]
+            if self._boundary_outside(position, boundary):
+                self._safe_stop(client)
+                return "outside", last_error
+            dx = float(target[0]) - float(position[0])
+            dy = float(target[1]) - float(position[1])
+            if math.hypot(dx, dy) <= 1e-6:
+                self._safe_stop(client)
+                return "reached", 0.0
+            target_yaw = math.atan2(dy, dx)
+            current_yaw = float(pose["rpy"][2])
+            yaw_error = self._normalise_radians(target_yaw - current_yaw)
+            last_error = math.degrees(yaw_error)
+            self.recovery_command.emit({
+                "current": list(position[:3]),
+                "target": list(target[:3]),
+                "current_yaw": math.degrees(current_yaw),
+                "target_yaw": math.degrees(target_yaw),
+                "phase": "turn",
+            })
+            if abs(yaw_error) <= tolerance:
+                self._safe_stop(client)
+                return "reached", last_error
+            if time.monotonic() - started >= timeout:
+                self._safe_stop(client)
+                return "timeout", last_error
+            speed_scale = min(1.0, abs(yaw_error) / math.radians(30.0))
+            minimum = min(int(speed), 800)
+            output = max(minimum, int(int(speed) * speed_scale))
+            # 实机标定：turn_x 负值左转（yaw 增大），正值右转。
+            turn_x = -output if yaw_error > 0.0 else output
+            client.joystick(
+                move_x=0, move_y=0, turn_x=turn_x, turn_y=0
+            )
+            if self._stop_motion.wait(0.1):
+                break
+        self._safe_stop(client)
+        return "stopped", last_error
+
+    def _drive_patrol_segment(
+        self,
+        client: MH4HttpClient,
+        boundary: dict[str, Any],
+        start: list[float],
+        endpoint: list[float],
+        speed: int,
+        tolerance: float,
+        timeout: float,
+    ) -> tuple[str, float, float]:
+        dx = float(endpoint[0]) - float(start[0])
+        dy = float(endpoint[1]) - float(start[1])
+        length = math.hypot(dx, dy)
+        if length <= 1e-9:
+            return "reached", 0.0, 0.0
+        unit_x = dx / length
+        unit_y = dy / length
+        target_yaw = math.atan2(dy, dx)
+        started = time.monotonic()
+        traveled = 0.0
+        endpoint_error = length
+        try:
+            while self._alive.is_set() and not self._stop_motion.is_set():
+                pose_status, pose = self._motion_pose(client, "巡逻前进")
+                if pose_status != "ready":
+                    return pose_status, traveled, endpoint_error
+                position = pose["pos"]
+                if self._boundary_outside(position, boundary):
+                    self._safe_stop(client)
+                    return "outside", traveled, endpoint_error
+                from_start_x = float(position[0]) - float(start[0])
+                from_start_y = float(position[1]) - float(start[1])
+                traveled = math.hypot(from_start_x, from_start_y)
+                forward_progress = from_start_x * unit_x + from_start_y * unit_y
+                endpoint_error = math.hypot(
+                    float(endpoint[0]) - float(position[0]),
+                    float(endpoint[1]) - float(position[1]),
+                )
+                if (
+                    endpoint_error <= tolerance
+                    or forward_progress >= length - tolerance
+                ):
+                    self._safe_stop(client)
+                    return "reached", traveled, endpoint_error
+                if time.monotonic() - started >= timeout:
+                    self._safe_stop(client)
+                    return "timeout", traveled, endpoint_error
+
+                current_yaw = float(pose["rpy"][2])
+                yaw_error = self._normalise_radians(target_yaw - current_yaw)
+                remaining = max(0.0, length - forward_progress)
+                move_scale = min(1.0, remaining / 0.30)
+                move_minimum = min(int(speed), 1000)
+                move_y = max(move_minimum, int(int(speed) * move_scale))
+                turn_x = 0
+                if abs(yaw_error) > math.radians(2.0):
+                    turn_limit = max(500, min(4000, int(speed) // 2))
+                    turn_scale = min(1.0, abs(yaw_error) / math.radians(20.0))
+                    correction = max(300, int(turn_limit * turn_scale))
+                    turn_x = -correction if yaw_error > 0.0 else correction
+                self.recovery_command.emit({
+                    "current": list(position[:3]),
+                    "target": list(endpoint[:3]),
+                    "current_yaw": math.degrees(current_yaw),
+                    "target_yaw": math.degrees(target_yaw),
+                    "phase": "move",
+                })
+                client.joystick(
+                    move_x=0,
+                    move_y=move_y,
+                    turn_x=turn_x,
+                    turn_y=0,
+                )
+                if self._stop_motion.wait(0.1):
+                    break
+            self._safe_stop(client)
+            return "stopped", traveled, endpoint_error
+        finally:
+            self.recovery_command.emit(None)
+
+    def _drive_to_world_target(
+        self,
+        client: MH4HttpClient,
+        target: list[float],
+        amplitude: int,
+        tolerance: float,
+        timeout: float,
+        *,
+        motion_label: str,
+        boundary: dict[str, Any] | None = None,
+    ) -> tuple[str, float]:
         started = time.monotonic()
         last_error = float("inf")
         while self._alive.is_set() and not self._stop_motion.is_set():
@@ -819,8 +1405,8 @@ class HttpAutoMoveWorker(QThread):
             position = pose.get("pos")
             if self._valid_pose_vector(position):
                 last_error = math.hypot(
-                    float(center[0]) - float(position[0]),
-                    float(center[1]) - float(position[1]),
+                    float(target[0]) - float(position[0]),
+                    float(target[1]) - float(position[1]),
                 )
 
             unavailable = self._return_pose_unavailable(pose, now)
@@ -828,11 +1414,11 @@ class HttpAutoMoveWorker(QThread):
                 status, detail = unavailable
                 self._log(
                     "WARN",
-                    f"回中心暂停: {detail}；已归零并等待数据恢复"
+                    f"{motion_label}暂停: {detail}；已归零并等待数据恢复"
                     f"（最多 {self._RETURN_POSE_RECOVERY_TIMEOUT:.1f}s）",
                 )
                 self._safe_stop(client)
-                recovered_at = self._wait_for_return_pose_recovery(
+                recovered_at = self._wait_for_pose_recovery(
                     self._RETURN_POSE_RECOVERY_TIMEOUT
                 )
                 if recovered_at is None:
@@ -841,15 +1427,19 @@ class HttpAutoMoveWorker(QThread):
                     return status, last_error
                 self._log(
                     "INFO",
-                    f"回中心数据已恢复，暂停 {recovered_at - now:.2f}s 后继续",
+                    f"{motion_label}数据已恢复，"
+                    f"暂停 {recovered_at - now:.2f}s 后继续",
                 )
                 continue
 
             position = pose["pos"]
             rpy = pose["rpy"]
-            dx = float(center[0]) - float(position[0])
-            dy = float(center[1]) - float(position[1])
+            dx = float(target[0]) - float(position[0])
+            dy = float(target[1]) - float(position[1])
             last_error = math.hypot(dx, dy)
+            if boundary is not None and self._boundary_outside(position, boundary):
+                self._safe_stop(client)
+                return "outside", last_error
             if last_error <= tolerance:
                 self._safe_stop(client)
                 return "reached", last_error
@@ -859,13 +1449,13 @@ class HttpAutoMoveWorker(QThread):
             yaw = float(rpy[2])
             self.recovery_command.emit({
                 "current": list(position[:3]),
-                "target": list(center[:3]),
+                "target": list(target[:3]),
                 "current_yaw": math.degrees(yaw),
                 "target_yaw": math.degrees(yaw),
                 "phase": "move",
             })
             client.joystick(**self._axes_to_world_target(
-                position, center, yaw, amplitude, tolerance
+                position, target, yaw, amplitude, tolerance
             ))
             if self._stop_motion.wait(0.1):
                 break
@@ -903,7 +1493,7 @@ class HttpAutoMoveWorker(QThread):
             return "imu_unavailable", f"HTTP IMU 已 {rpy_age:.2f}s 未更新"
         return None
 
-    def _wait_for_return_pose_recovery(self, timeout: float) -> float | None:
+    def _wait_for_pose_recovery(self, timeout: float) -> float | None:
         deadline = time.monotonic() + max(0.0, float(timeout))
         while self._alive.is_set() and not self._stop_motion.is_set():
             now = time.monotonic()
@@ -932,9 +1522,13 @@ class HttpAutoMoveWorker(QThread):
         left_error = -math.sin(yaw) * dx + math.cos(yaw) * dy
         scale = max(abs(forward_error), abs(left_error), 1e-9)
         distance = math.hypot(dx, dy)
-        slow_radius = max(0.30, tolerance * 3.0)
+        slow_radius = max(
+            HttpAutoMoveWorker._RETURN_SLOW_RADIUS, tolerance * 4.0
+        )
         speed_scale = min(1.0, distance / slow_radius)
-        minimum = min(int(amplitude), 1000)
+        minimum = min(
+            int(amplitude), HttpAutoMoveWorker._RETURN_MIN_AMPLITUDE
+        )
         output = max(minimum, int(int(amplitude) * speed_scale))
         return {
             "move_x": int(round(-output * left_error / scale)),
@@ -1014,6 +1608,10 @@ class HttpAutoMoveWorker(QThread):
     @staticmethod
     def _normalise_degrees(value: float) -> float:
         return (float(value) + 180.0) % 360.0 - 180.0
+
+    @staticmethod
+    def _normalise_radians(value: float) -> float:
+        return (float(value) + math.pi) % (2.0 * math.pi) - math.pi
 
     @classmethod
     def _segment_error_text(
