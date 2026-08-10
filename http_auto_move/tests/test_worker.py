@@ -293,6 +293,113 @@ class WorkerSequenceTest(unittest.TestCase):
         self.assertEqual(axes["move_x"], 0)
         self.assertGreater(axes["move_y"], 0)
 
+    def test_return_center_pauses_for_stale_imu_then_resumes(self):
+        worker = HttpAutoMoveWorker()
+        client = _FakeClient()
+        worker._alive.set()
+        worker._RETURN_POSE_RECOVERY_TIMEOUT = 0.2
+        stopped = []
+        worker._safe_stop = lambda _client: stopped.append(True)
+        snapshots = 0
+
+        def pose_snapshot():
+            nonlocal snapshots
+            snapshots += 1
+            now = time.monotonic()
+            if snapshots < 3:
+                return {
+                    "pos": [1.0, 0.0, 0.0],
+                    "pos_at": now,
+                    "rpy": [0.0, 0.0, 0.0],
+                    "rpy_at": now - 2.0,
+                }
+            return {
+                "pos": [0.0, 0.0, 0.0],
+                "pos_at": now,
+                "rpy": [0.0, 0.0, 0.0],
+                "rpy_at": now,
+            }
+
+        worker._pose_snapshot = pose_snapshot
+        logs = []
+        worker.log_msg.connect(logs.append)
+        result, error = worker._drive_to_boundary_center(
+            client,
+            worker._boundary_geometry(
+                [0.0, 0.0, 0.0], length=2.0, width=1.0, yaw=0.0
+            ),
+            amplitude=5000,
+            tolerance=0.05,
+            timeout=1.0,
+        )
+
+        self.assertEqual(result, "reached")
+        self.assertEqual(error, 0.0)
+        self.assertEqual(client.calls, [])
+        self.assertGreaterEqual(len(stopped), 2)
+        self.assertTrue(any("回中心暂停" in line for line in logs))
+        self.assertTrue(any("回中心数据已恢复" in line for line in logs))
+
+    def test_return_center_fails_when_imu_does_not_recover(self):
+        worker = HttpAutoMoveWorker()
+        client = _FakeClient()
+        worker._alive.set()
+        worker._RETURN_POSE_RECOVERY_TIMEOUT = 0.03
+        worker._RETURN_POSE_POLL_INTERVAL = 0.005
+        worker._safe_stop = lambda _client: None
+
+        def stale_pose():
+            now = time.monotonic()
+            return {
+                "pos": [1.0, 0.0, 0.0],
+                "pos_at": now,
+                "rpy": [0.0, 0.0, 0.0],
+                "rpy_at": now - 2.0,
+            }
+
+        worker._pose_snapshot = stale_pose
+        result, error = worker._drive_to_boundary_center(
+            client,
+            worker._boundary_geometry(
+                [0.0, 0.0, 0.0], length=2.0, width=1.0, yaw=0.0
+            ),
+            amplitude=5000,
+            tolerance=0.05,
+            timeout=1.0,
+        )
+
+        self.assertEqual(result, "imu_unavailable")
+        self.assertEqual(error, 1.0)
+
+    def test_return_center_sensor_wait_honors_user_stop(self):
+        worker = HttpAutoMoveWorker()
+        client = _FakeClient()
+        worker._alive.set()
+
+        def stale_pose():
+            now = time.monotonic()
+            return {
+                "pos": [1.0, 0.0, 0.0],
+                "pos_at": now,
+                "rpy": [0.0, 0.0, 0.0],
+                "rpy_at": now - 2.0,
+            }
+
+        worker._pose_snapshot = stale_pose
+        worker._safe_stop = lambda _client: worker._stop_motion.set()
+        result, error = worker._drive_to_boundary_center(
+            client,
+            worker._boundary_geometry(
+                [0.0, 0.0, 0.0], length=2.0, width=1.0, yaw=0.0
+            ),
+            amplitude=5000,
+            tolerance=0.05,
+            timeout=1.0,
+        )
+
+        self.assertEqual(result, "stopped")
+        self.assertEqual(error, 1.0)
+
 
 if __name__ == "__main__":
     unittest.main()

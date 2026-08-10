@@ -21,6 +21,10 @@ except ImportError:  # 支持 python3 http_auto_move/main.py
 class HttpAutoMoveWorker(QThread):
     """维持 exchange 心跳，并按固定频率重复发送摇杆时序。"""
 
+    _POSE_MAX_AGE = 1.0
+    _RETURN_POSE_RECOVERY_TIMEOUT = 3.0
+    _RETURN_POSE_POLL_INTERVAL = 0.05
+
     connected = Signal(bool, str)
     exchange_data = Signal(dict)
     odom_data = Signal(dict)       # gRPC 仅提供位置/速度；姿态始终来自 HTTP IMU
@@ -226,6 +230,10 @@ class HttpAutoMoveWorker(QThread):
                 if failures in (1, 3) or failures % 10 == 0:
                     self._log("ERROR", f"exchange 心跳失败({failures}): {exc}")
             next_tick += 0.2  # 5 Hz，远小于文档中的 3 秒占用超时
+            # 请求偶尔变慢时不要连续补发积欠的 exchange，避免与摇杆请求争抢
+            # 控制器的 HTTP 处理能力，形成“越慢越密集”的反馈循环。
+            if next_tick < time.monotonic():
+                next_tick = time.monotonic() + 0.2
             wait = max(0.0, next_tick - time.monotonic())
             time.sleep(wait)
 
@@ -693,25 +701,38 @@ class HttpAutoMoveWorker(QThread):
         last_error = float("inf")
         while self._alive.is_set() and not self._stop_motion.is_set():
             pose = self._pose_snapshot()
-            position = pose.get("pos")
-            rpy = pose.get("rpy")
             now = time.monotonic()
-            if (
-                position is None
-                or len(position) < 3
-                or now - float(pose.get("pos_at", 0.0)) > 1.0
-                or not all(math.isfinite(float(value)) for value in position[:3])
-            ):
+            position = pose.get("pos")
+            if self._valid_pose_vector(position):
+                last_error = math.hypot(
+                    float(center[0]) - float(position[0]),
+                    float(center[1]) - float(position[1]),
+                )
+
+            unavailable = self._return_pose_unavailable(pose, now)
+            if unavailable is not None:
+                status, detail = unavailable
+                self._log(
+                    "WARN",
+                    f"回中心暂停: {detail}；已归零并等待数据恢复"
+                    f"（最多 {self._RETURN_POSE_RECOVERY_TIMEOUT:.1f}s）",
+                )
                 self._safe_stop(client)
-                return "position_unavailable", last_error
-            if (
-                rpy is None
-                or len(rpy) < 3
-                or now - float(pose.get("rpy_at", 0.0)) > 1.0
-                or not all(math.isfinite(float(value)) for value in rpy[:3])
-            ):
-                self._safe_stop(client)
-                return "imu_unavailable", last_error
+                recovered_at = self._wait_for_return_pose_recovery(
+                    self._RETURN_POSE_RECOVERY_TIMEOUT
+                )
+                if recovered_at is None:
+                    if self._stop_motion.is_set() or not self._alive.is_set():
+                        return "stopped", last_error
+                    return status, last_error
+                self._log(
+                    "INFO",
+                    f"回中心数据已恢复，暂停 {recovered_at - now:.2f}s 后继续",
+                )
+                continue
+
+            position = pose["pos"]
+            rpy = pose["rpy"]
             dx = float(center[0]) - float(position[0])
             dy = float(center[1]) - float(position[1])
             last_error = math.hypot(dx, dy)
@@ -736,6 +757,52 @@ class HttpAutoMoveWorker(QThread):
                 break
         self._safe_stop(client)
         return "stopped", last_error
+
+    @staticmethod
+    def _valid_pose_vector(value: Any) -> bool:
+        if not isinstance(value, (list, tuple)) or len(value) < 3:
+            return False
+        try:
+            return all(math.isfinite(float(item)) for item in value[:3])
+        except (TypeError, ValueError):
+            return False
+
+    @classmethod
+    def _return_pose_unavailable(
+        cls, pose: dict[str, Any], now: float
+    ) -> tuple[str, str] | None:
+        position = pose.get("pos")
+        if not cls._valid_pose_vector(position):
+            return "position_unavailable", "gRPC 位置不可用"
+        position_age = max(0.0, now - float(pose.get("pos_at", 0.0)))
+        if position_age > cls._POSE_MAX_AGE:
+            return (
+                "position_unavailable",
+                f"gRPC 位置已 {position_age:.2f}s 未更新",
+            )
+
+        rpy = pose.get("rpy")
+        if not cls._valid_pose_vector(rpy):
+            return "imu_unavailable", "HTTP IMU 不可用"
+        rpy_age = max(0.0, now - float(pose.get("rpy_at", 0.0)))
+        if rpy_age > cls._POSE_MAX_AGE:
+            return "imu_unavailable", f"HTTP IMU 已 {rpy_age:.2f}s 未更新"
+        return None
+
+    def _wait_for_return_pose_recovery(self, timeout: float) -> float | None:
+        deadline = time.monotonic() + max(0.0, float(timeout))
+        while self._alive.is_set() and not self._stop_motion.is_set():
+            now = time.monotonic()
+            if self._return_pose_unavailable(self._pose_snapshot(), now) is None:
+                return now
+            remaining = deadline - now
+            if remaining <= 0.0:
+                break
+            if self._stop_motion.wait(
+                min(self._RETURN_POSE_POLL_INTERVAL, remaining)
+            ):
+                break
+        return None
 
     @staticmethod
     def _axes_to_world_target(
