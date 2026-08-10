@@ -70,6 +70,7 @@ class MainWindow(QMainWindow):
         self._worker.exchange_data.connect(self._on_exchange)
         self._worker.odom_data.connect(self._on_odom)
         self._worker.trajectory_status.connect(self._on_trajectory_status)
+        self._worker.recovery_command.connect(self._on_recovery_command)
         self._worker.log_msg.connect(self._append_log)
         self._worker.finished_ok.connect(self._on_finished)
         self._worker.emergency_result.connect(self._on_emergency_result)
@@ -78,7 +79,10 @@ class MainWindow(QMainWindow):
         self._connected = False
         self._moving = False
         self._last_http_rpy = [0.0, 0.0, 0.0]
+        self._last_http_rpy_at = 0.0
         self._last_position: list[float] | None = None
+        self._last_position_at = 0.0
+        self._boundary_region: dict[str, Any] | None = None
         self._action_configs: list[dict[str, Any]] = []
         self._api_request_pending = False
         self._selected_api_endpoint: ApiEndpoint | None = None
@@ -177,6 +181,7 @@ class MainWindow(QMainWindow):
         auto_layout = QVBoxLayout(auto_tab)
         auto_layout.addWidget(self._build_action_group(), 1)
         auto_layout.addWidget(self._build_common_group())
+        auto_layout.addWidget(self._build_boundary_group())
         auto_layout.addLayout(self._build_control_buttons())
         tabs.addTab(auto_tab, "自动来回动作")
 
@@ -372,6 +377,62 @@ class MainWindow(QMainWindow):
         form.addRow("运动状态:", self.prepare_action_combo)
         return group
 
+    def _build_boundary_group(self) -> QGroupBox:
+        group = QGroupBox("运动范围限制（可选）")
+        group.setStyleSheet(self._group_style("#80deea"))
+        form = QFormLayout(group)
+
+        dimensions = QHBoxLayout()
+        self.boundary_length_spin = self._double_spin(
+            0.4, 50.0, 2.0, " m 长", 2, 0.1
+        )
+        self.boundary_length_spin.setToolTip("沿设定时机身前后方向的总长度")
+        dimensions.addWidget(self.boundary_length_spin)
+        self.boundary_width_spin = self._double_spin(
+            0.4, 50.0, 1.5, " m 宽", 2, 0.1
+        )
+        self.boundary_width_spin.setToolTip("沿设定时机身左右方向的总宽度")
+        dimensions.addWidget(self.boundary_width_spin)
+        form.addRow("范围尺寸:", dimensions)
+
+        buttons = QHBoxLayout()
+        self.boundary_set_button = QPushButton("以当前位置设定范围")
+        self.boundary_set_button.setStyleSheet(
+            self._button_style("#00796b", "#009688", compact=True)
+        )
+        self.boundary_set_button.clicked.connect(self._set_boundary_from_current_pose)
+        buttons.addWidget(self.boundary_set_button)
+        self.boundary_clear_button = QPushButton("取消限制")
+        self.boundary_clear_button.setStyleSheet(
+            self._button_style("#455a64", "#607d8b", compact=True)
+        )
+        self.boundary_clear_button.clicked.connect(self._clear_boundary)
+        buttons.addWidget(self.boundary_clear_button)
+        form.addRow(buttons)
+
+        self.boundary_status_label = QLabel("未设置：自动动作不限制范围")
+        self.boundary_status_label.setWordWrap(True)
+        self.boundary_status_label.setStyleSheet(
+            "color:#a8b3bc; background:#25272b; border:1px solid #455a64; "
+            "border-radius:4px; padding:6px; font:11px monospace;"
+        )
+        form.addRow(self.boundary_status_label)
+        note = QLabel(
+            "设定后仍使用上方动作、幅值、持续时间和执行组数；仅在越界时停止"
+            "当前方向并自动插入回中心指令。"
+        )
+        note.setWordWrap(True)
+        note.setStyleSheet("color:#ffcc80; font:11px;")
+        form.addRow(note)
+
+        self.boundary_length_spin.valueChanged.connect(
+            self._resize_existing_boundary
+        )
+        self.boundary_width_spin.valueChanged.connect(
+            self._resize_existing_boundary
+        )
+        return group
+
     def _build_control_buttons(self) -> QHBoxLayout:
         row = QHBoxLayout()
         self.start_button = QPushButton("▶ 开始")
@@ -425,7 +486,10 @@ class MainWindow(QMainWindow):
         self.trajectory_plot = TrajectoryPlot3D()
         layout.addWidget(self.trajectory_plot, 1)
         controls = QHBoxLayout()
-        hint = QLabel("绿线：实际轨迹　彩色轴：HTTP IMU 姿态")
+        hint = QLabel(
+            "绿线：实际轨迹　彩色轴：HTTP IMU　青框/黄点：限制范围/中心　"
+            "紫线：越界回中指令"
+        )
         hint.setStyleSheet("color:#a8b3bc; font:11px;")
         controls.addWidget(hint)
         controls.addStretch()
@@ -785,6 +849,11 @@ class MainWindow(QMainWindow):
     def _connect(self) -> None:
         if self._worker.isRunning():
             return
+        if self._boundary_region is not None:
+            self._clear_boundary(silent=True)
+        self._last_position = None
+        self._last_position_at = 0.0
+        self._last_http_rpy_at = 0.0
         try:
             MH4HttpClient(self.address_edit.text())  # 仅做本地格式校验
             self._worker.configure(
@@ -850,7 +919,82 @@ class MainWindow(QMainWindow):
             "settle_time": self.settle_spin.value(),
             "rate_hz": 10.0,
             "prepare_action_id": self.prepare_action_combo.currentData(),
+            "boundary": copy.deepcopy(self._boundary_region),
         }
+
+    def _set_boundary_from_current_pose(self) -> None:
+        if not self._connected or self._moving:
+            return
+        now = time.monotonic()
+        if (
+            self._last_position is None
+            or now - self._last_position_at > 1.0
+            or now - self._last_http_rpy_at > 1.0
+        ):
+            QMessageBox.warning(
+                self,
+                "无法设定范围",
+                "需要最近 1 秒内的 gRPC 位置和 HTTP IMU，请先确认两种数据都在更新。",
+            )
+            return
+        center = list(self._last_position)
+        yaw = float(self._last_http_rpy[2])
+        self._boundary_region = self._worker._boundary_geometry(
+            center,
+            self.boundary_length_spin.value(),
+            self.boundary_width_spin.value(),
+            yaw,
+        )
+        self._show_boundary()
+        self._append_log(
+            f"[{self._time()}] [BOUNDARY] 已设定运动范围: "
+            f"中心=({center[0]:.3f},{center[1]:.3f})m，"
+            f"长={self.boundary_length_spin.value():.2f}m，"
+            f"宽={self.boundary_width_spin.value():.2f}m，"
+            f"方向={math.degrees(yaw):.1f}°"
+        )
+        self._set_connected_ui(self._connected)
+
+    def _resize_existing_boundary(self, _value: float) -> None:
+        region = self._boundary_region
+        if region is None or self._moving:
+            return
+        self._boundary_region = self._worker._boundary_geometry(
+            list(region["center"]),
+            self.boundary_length_spin.value(),
+            self.boundary_width_spin.value(),
+            float(region["yaw"]),
+        )
+        self._show_boundary()
+
+    def _show_boundary(self) -> None:
+        region = self._boundary_region
+        if region is None:
+            return
+        center = region["center"]
+        self.trajectory_plot.set_boundary_region(region)
+        self.boundary_status_label.setText(
+            f"限制已启用：中心 x={center[0]:.3f} y={center[1]:.3f} m；"
+            f"长={region['length']:.2f} m，宽={region['width']:.2f} m；"
+            f"方向={math.degrees(region['yaw']):.1f}°"
+        )
+        self.boundary_status_label.setStyleSheet(
+            "color:#80deea; background:#25272b; border:1px solid #397680; "
+            "border-radius:4px; padding:6px; font:11px monospace;"
+        )
+
+    def _clear_boundary(self, _checked: bool = False, *, silent: bool = False) -> None:
+        self._boundary_region = None
+        self.trajectory_plot.set_boundary_region(None)
+        self.trajectory_plot.set_current_command(None)
+        self.boundary_status_label.setText("未设置：自动动作不限制范围")
+        self.boundary_status_label.setStyleSheet(
+            "color:#a8b3bc; background:#25272b; border:1px solid #455a64; "
+            "border-radius:4px; padding:6px; font:11px monospace;"
+        )
+        if not silent:
+            self._append_log(f"[{self._time()}] [BOUNDARY] 已取消运动范围限制")
+        self._set_connected_ui(self._connected)
 
     def _stop(self) -> None:
         if not self._moving:
@@ -881,6 +1025,9 @@ class MainWindow(QMainWindow):
         if isinstance(rpy, (list, tuple)) and len(rpy) >= 3:
             try:
                 self._last_http_rpy = [float(value) for value in rpy[:3]]
+                if not all(math.isfinite(value) for value in self._last_http_rpy):
+                    raise ValueError("HTTP IMU 含非有限值")
+                self._last_http_rpy_at = time.monotonic()
                 degrees = [math.degrees(float(value)) for value in rpy[:3]]
                 self.rpy_label.setText(
                     f"r={degrees[0]:.1f}°  p={degrees[1]:.1f}°  y={degrees[2]:.1f}°"
@@ -916,6 +1063,9 @@ class MainWindow(QMainWindow):
             return
         try:
             self._last_position = [float(value) for value in pos[:3]]
+            if not all(math.isfinite(value) for value in self._last_position):
+                return
+            self._last_position_at = time.monotonic()
         except (TypeError, ValueError):
             return
         x, y, z = self._last_position
@@ -930,22 +1080,35 @@ class MainWindow(QMainWindow):
             else "color:#ffb74d; font:13px monospace;"
         )
 
+    def _on_recovery_command(self, command: object) -> None:
+        self.trajectory_plot.set_current_command(command)
+
     def _clear_trajectory(self) -> None:
         self.trajectory_plot.clear()
+        if self._boundary_region is not None:
+            self._show_boundary()
         self._append_log(f"[{self._time()}] [INFO] 已清除轨迹")
 
     def _on_finished(self, message: str) -> None:
         self._moving = False
+        self.trajectory_plot.set_current_command(None)
         self._set_connected_ui(self._connected)
 
     def _on_emergency_result(self, ok: bool, message: str) -> None:
         if ok and "已触发" in message:
             self._moving = False
+            self.trajectory_plot.set_current_command(None)
             self._set_connected_ui(self._connected)
 
     def _set_connected_ui(self, connected: bool) -> None:
         self.start_button.setEnabled(connected and not self._moving)
         self.stop_button.setEnabled(connected and self._moving)
+        self.boundary_set_button.setEnabled(connected and not self._moving)
+        self.boundary_clear_button.setEnabled(
+            not self._moving and self._boundary_region is not None
+        )
+        self.boundary_length_spin.setEnabled(not self._moving)
+        self.boundary_width_spin.setEnabled(not self._moving)
         self.emergency_button.setEnabled(connected)
         self.release_button.setEnabled(connected)
         self.api_send_button.setEnabled(

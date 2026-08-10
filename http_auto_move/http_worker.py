@@ -25,6 +25,7 @@ class HttpAutoMoveWorker(QThread):
     exchange_data = Signal(dict)
     odom_data = Signal(dict)       # gRPC 仅提供位置/速度；姿态始终来自 HTTP IMU
     trajectory_status = Signal(bool, str)
+    recovery_command = Signal(object)
     log_msg = Signal(str)
     finished_ok = Signal(str)
     emergency_result = Signal(bool, str)
@@ -66,6 +67,11 @@ class HttpAutoMoveWorker(QThread):
         self._connection_type = connection_type
         self._grpc_port = max(1, min(65535, int(grpc_port)))
         self._timeout = max(0.1, float(timeout))
+        with self._pose_lock:
+            self._latest_position = None
+            self._latest_position_at = 0.0
+            self._latest_http_rpy = None
+            self._latest_http_rpy_at = 0.0
 
     def start_move(self, command: dict[str, Any]) -> None:
         self._commands.put(dict(command))
@@ -254,6 +260,8 @@ class HttpAutoMoveWorker(QThread):
                         raise RuntimeError("pos_body 缺少 x/y")
                     while len(pos) < 3:
                         pos.append(0.0)
+                    if not all(math.isfinite(value) for value in pos[:3]):
+                        raise RuntimeError("pos_body 含非有限值")
                     vel = [float(value) for value in rs.vel_body]
                     while len(vel) < 3:
                         vel.append(0.0)
@@ -311,8 +319,10 @@ class HttpAutoMoveWorker(QThread):
         settle_time = max(0.0, float(command.get("settle_time", 0.3)))
         rate_hz = max(2.0, min(50.0, float(command.get("rate_hz", 10.0))))
         name = str(command.get("name", "摇杆时序"))
+        boundary = None
 
         try:
+            boundary = self._validated_boundary(command.get("boundary"))
             prepare_action_id = command.get("prepare_action_id")
             if prepare_action_id is not None:
                 self._log(
@@ -329,7 +339,15 @@ class HttpAutoMoveWorker(QThread):
                 f"启动 {name}: 每组 {len(segments)} 个方向，频率 {rate_hz:.1f}Hz，"
                 f"组数 {'无限' if infinite else repetitions}",
             )
+            if boundary is not None:
+                center = boundary["center"]
+                self._log(
+                    "BOUNDARY",
+                    f"范围限制已启用: 中心=({center[0]:.3f},{center[1]:.3f})m，"
+                    f"长={boundary['length']:.2f}m，宽={boundary['width']:.2f}m",
+                )
             cycle = 0
+            failure = ""
             while self._alive.is_set() and not self._stop_motion.is_set():
                 cycle += 1
                 if not infinite and cycle > repetitions:
@@ -347,7 +365,7 @@ class HttpAutoMoveWorker(QThread):
                         f"btn_turn=({axes['turn_x']},{axes['turn_y']}) | "
                         f"持续={segment['duration']:.1f}s @ {rate_hz:.1f}Hz",
                     )
-                    self._drive_once(
+                    drive_result, boundary_error = self._drive_once(
                         client,
                         stage,
                         segment["axes"],
@@ -355,16 +373,61 @@ class HttpAutoMoveWorker(QThread):
                         rate_hz,
                         cycle,
                         total,
+                        boundary=boundary,
                     )
                     self._log(
                         "CMD", f"■ 第{cycle}组 {segment['name']}结束，摇杆已归零"
                     )
-                    segment_end = self._pose_after(time.monotonic(), timeout=0.35)
+                    if drive_result == "outside":
+                        segment_end = self._pose_snapshot()
+                    else:
+                        segment_end = self._pose_after(
+                            time.monotonic(), timeout=0.35
+                        )
                     self._log_segment_error(
                         cycle, segment["name"], segment["axes"],
                         segment_start, segment_end,
                     )
                     if self._stop_motion.is_set() or not self._alive.is_set():
+                        break
+                    if drive_result == "outside" and boundary is not None:
+                        self._log(
+                            "WARN",
+                            f"第{cycle}组 {segment['name']}检测到越界，"
+                            f"距中心={boundary_error:.4f}m；已归零，插入回中心指令",
+                        )
+                        amplitude = max(
+                            500,
+                            min(32767, max(abs(value) for value in axes.values())),
+                        )
+                        returned, center_error = self._return_to_boundary_center(
+                            client, boundary, amplitude
+                        )
+                        error_text = (
+                            f"{center_error:.4f}m"
+                            if math.isfinite(center_error) else "不可用"
+                        )
+                        if returned != "reached":
+                            self._log(
+                                "MEASURE",
+                                f"第{cycle}组 越界回中心中止: 状态={returned}，"
+                                f"中心误差={error_text}",
+                            )
+                            if returned != "stopped":
+                                failure = (
+                                    f"越界回中心失败（{returned}，"
+                                    f"中心误差={error_text}）"
+                                )
+                            break
+                        self._log(
+                            "MEASURE",
+                            f"第{cycle}组 越界回中心完成: 中心误差={error_text}",
+                        )
+                        self._log("BOUNDARY", "已回到中心，继续后续来回动作")
+                    elif drive_result != "completed":
+                        if drive_result != "stopped":
+                            failure = f"范围限制停止动作（{drive_result}）"
+                            self._log("ERROR", failure)
                         break
                     has_more = (
                         index + 1 < len(segments)
@@ -376,19 +439,29 @@ class HttpAutoMoveWorker(QThread):
                         if self._stop_motion.wait(settle_time):
                             break
 
-                if not self._stop_motion.is_set() and self._alive.is_set():
+                if (
+                    not failure
+                    and not self._stop_motion.is_set()
+                    and self._alive.is_set()
+                ):
                     group_end = self._pose_snapshot()
                     self._log_group_error(cycle, name, group_start, group_end)
+                if failure:
+                    break
 
             stopped = self._stop_motion.is_set()
-            message = "动作已停止" if stopped else "动作执行完成"
+            if failure:
+                message = f"动作执行失败：{failure}"
+            else:
+                message = "动作已停止" if stopped else "动作执行完成"
             self.finished_ok.emit(message)
-            self._log("INFO", message)
+            self._log("ERROR" if failure else "INFO", message)
         except Exception as exc:
             self._log("ERROR", f"动作执行失败: {exc}")
             self.finished_ok.emit(f"动作执行失败: {exc}")
         finally:
             self._safe_stop(client)
+            self.recovery_command.emit(None)
 
     def _execute_manual_api(self, command: dict[str, Any]) -> None:
         """在后台执行控制台请求，避免 HTTP 超时阻塞 Qt 界面。"""
@@ -475,11 +548,35 @@ class HttpAutoMoveWorker(QThread):
         rate_hz: float,
         cycle: int,
         total: int,
-    ) -> None:
+        *,
+        boundary: dict[str, Any] | None = None,
+    ) -> tuple[str, float]:
         started = time.monotonic()
         period = 1.0 / rate_hz
         next_tick = started
+        center_error = float("inf")
         while self._alive.is_set() and not self._stop_motion.is_set():
+            if boundary is not None:
+                pose = self._pose_snapshot()
+                position = pose.get("pos")
+                if (
+                    position is None
+                    or len(position) < 3
+                    or time.monotonic() - float(pose.get("pos_at", 0.0)) > 1.0
+                    or not all(
+                        math.isfinite(float(value)) for value in position[:3]
+                    )
+                ):
+                    self._safe_stop(client)
+                    return "position_unavailable", center_error
+                center = boundary["center"]
+                center_error = math.hypot(
+                    float(position[0]) - float(center[0]),
+                    float(position[1]) - float(center[1]),
+                )
+                if self._boundary_outside(position, boundary):
+                    self._safe_stop(client)
+                    return "outside", center_error
             elapsed = time.monotonic() - started
             if elapsed >= duration:
                 break
@@ -489,6 +586,181 @@ class HttpAutoMoveWorker(QThread):
             if self._stop_motion.wait(wait):
                 break
         self._safe_stop(client)
+        if self._stop_motion.is_set() or not self._alive.is_set():
+            return "stopped", center_error
+        return "completed", center_error
+
+    @staticmethod
+    def _boundary_geometry(
+        center: list[float], length: float, width: float, yaw: float
+    ) -> dict[str, Any]:
+        cx, cy = float(center[0]), float(center[1])
+        cz = float(center[2]) if len(center) >= 3 else 0.0
+        forward = (math.cos(yaw), math.sin(yaw))
+        left = (-math.sin(yaw), math.cos(yaw))
+        half_length = float(length) / 2.0
+        half_width = float(width) / 2.0
+        corners = []
+        for forward_sign, left_sign in ((1, 1), (1, -1), (-1, -1), (-1, 1)):
+            corners.append([
+                cx + forward_sign * forward[0] * half_length
+                + left_sign * left[0] * half_width,
+                cy + forward_sign * forward[1] * half_length
+                + left_sign * left[1] * half_width,
+                cz,
+            ])
+        return {
+            "center": [cx, cy, cz],
+            "corners": corners,
+            "length": float(length),
+            "width": float(width),
+            "yaw": float(yaw),
+        }
+
+    @classmethod
+    def _validated_boundary(cls, raw: Any) -> dict[str, Any] | None:
+        if raw is None:
+            return None
+        if not isinstance(raw, dict):
+            raise ValueError("运动范围参数格式错误")
+        center = raw.get("center")
+        if not isinstance(center, (list, tuple)) or len(center) < 3:
+            raise ValueError("运动范围缺少中心坐标")
+        try:
+            center_values = [float(value) for value in center[:3]]
+            length = float(raw.get("length"))
+            width = float(raw.get("width"))
+            yaw = float(raw.get("yaw"))
+        except (TypeError, ValueError) as exc:
+            raise ValueError("运动范围含无效数值") from exc
+        if not all(math.isfinite(value) for value in (*center_values, length, width, yaw)):
+            raise ValueError("运动范围含非有限数值")
+        if not 0.4 <= length <= 50.0 or not 0.4 <= width <= 50.0:
+            raise ValueError("运动范围长宽必须在 0.4～50 m 内")
+        return cls._boundary_geometry(center_values, length, width, yaw)
+
+    @staticmethod
+    def _boundary_local_position(
+        position: list[float], boundary: dict[str, Any]
+    ) -> tuple[float, float]:
+        center = boundary["center"]
+        yaw = float(boundary["yaw"])
+        dx = float(position[0]) - float(center[0])
+        dy = float(position[1]) - float(center[1])
+        return (
+            math.cos(yaw) * dx + math.sin(yaw) * dy,
+            -math.sin(yaw) * dx + math.cos(yaw) * dy,
+        )
+
+    @classmethod
+    def _boundary_outside(
+        cls, position: list[float], boundary: dict[str, Any]
+    ) -> bool:
+        forward, left = cls._boundary_local_position(position, boundary)
+        return (
+            abs(forward) > float(boundary["length"]) / 2.0
+            or abs(left) > float(boundary["width"]) / 2.0
+        )
+
+    def _return_to_boundary_center(
+        self,
+        client: MH4HttpClient,
+        boundary: dict[str, Any],
+        amplitude: int,
+    ) -> tuple[str, float]:
+        tolerance = max(
+            0.05,
+            min(0.15, min(boundary["length"], boundary["width"]) * 0.08),
+        )
+        timeout = max(8.0, max(boundary["length"], boundary["width"]) * 12.0)
+        try:
+            return self._drive_to_boundary_center(
+                client, boundary, amplitude, tolerance, timeout
+            )
+        finally:
+            self.recovery_command.emit(None)
+
+    def _drive_to_boundary_center(
+        self,
+        client: MH4HttpClient,
+        boundary: dict[str, Any],
+        amplitude: int,
+        tolerance: float,
+        timeout: float,
+    ) -> tuple[str, float]:
+        center = boundary["center"]
+        started = time.monotonic()
+        last_error = float("inf")
+        while self._alive.is_set() and not self._stop_motion.is_set():
+            pose = self._pose_snapshot()
+            position = pose.get("pos")
+            rpy = pose.get("rpy")
+            now = time.monotonic()
+            if (
+                position is None
+                or len(position) < 3
+                or now - float(pose.get("pos_at", 0.0)) > 1.0
+                or not all(math.isfinite(float(value)) for value in position[:3])
+            ):
+                self._safe_stop(client)
+                return "position_unavailable", last_error
+            if (
+                rpy is None
+                or len(rpy) < 3
+                or now - float(pose.get("rpy_at", 0.0)) > 1.0
+                or not all(math.isfinite(float(value)) for value in rpy[:3])
+            ):
+                self._safe_stop(client)
+                return "imu_unavailable", last_error
+            dx = float(center[0]) - float(position[0])
+            dy = float(center[1]) - float(position[1])
+            last_error = math.hypot(dx, dy)
+            if last_error <= tolerance:
+                self._safe_stop(client)
+                return "reached", last_error
+            if now - started >= timeout:
+                self._safe_stop(client)
+                return "timeout", last_error
+            yaw = float(rpy[2])
+            self.recovery_command.emit({
+                "current": list(position[:3]),
+                "target": list(center[:3]),
+                "current_yaw": math.degrees(yaw),
+                "target_yaw": math.degrees(yaw),
+                "phase": "move",
+            })
+            client.joystick(**self._axes_to_world_target(
+                position, center, yaw, amplitude, tolerance
+            ))
+            if self._stop_motion.wait(0.1):
+                break
+        self._safe_stop(client)
+        return "stopped", last_error
+
+    @staticmethod
+    def _axes_to_world_target(
+        position: list[float],
+        target: list[float],
+        yaw: float,
+        amplitude: int,
+        tolerance: float,
+    ) -> dict[str, int]:
+        dx = float(target[0]) - float(position[0])
+        dy = float(target[1]) - float(position[1])
+        forward_error = math.cos(yaw) * dx + math.sin(yaw) * dy
+        left_error = -math.sin(yaw) * dx + math.cos(yaw) * dy
+        scale = max(abs(forward_error), abs(left_error), 1e-9)
+        distance = math.hypot(dx, dy)
+        slow_radius = max(0.30, tolerance * 3.0)
+        speed_scale = min(1.0, distance / slow_radius)
+        minimum = min(int(amplitude), 1000)
+        output = max(minimum, int(int(amplitude) * speed_scale))
+        return {
+            "move_x": int(round(-output * left_error / scale)),
+            "move_y": int(round(output * forward_error / scale)),
+            "turn_x": 0,
+            "turn_y": 0,
+        }
 
     def _remember_exchange(self, data: dict[str, Any]) -> None:
         """保存 HTTP IMU，供误差计算和指令可视化使用。"""

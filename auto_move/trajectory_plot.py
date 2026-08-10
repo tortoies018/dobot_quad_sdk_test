@@ -38,6 +38,8 @@ COLOR_TARGET = (1.0, 0.65, 0.05, 1.0)
 COLOR_COMMAND = np.array([0.78, 0.05, 0.95, 1.0], dtype=np.float32)
 COLOR_COMMAND_HEADING = np.array([0.0, 0.72, 1.0, 1.0], dtype=np.float32)
 COLOR_COMMAND_ARC = np.array([1.0, 0.85, 0.05, 1.0], dtype=np.float32)
+COLOR_BOUNDARY = np.array([0.0, 0.75, 0.95, 1.0], dtype=np.float32)
+COLOR_BOUNDARY_CENTER = (1.0, 0.82, 0.1, 1.0)
 
 
 def _repeat_color(color, n):
@@ -104,6 +106,17 @@ class TrajectoryPlot3D(gl.GLViewWidget):
         self.addItem(self._ideal_targets)
         self._ideal_arrows = gl.GLLinePlotItem(mode="lines", width=2, glOptions='translucent')
         self.addItem(self._ideal_arrows)
+
+        # 自动来回动作的安全范围：青色长方形和黄色中心点。
+        self._boundary_outline = gl.GLLinePlotItem(
+            mode="line_strip", width=4, antialias=True, glOptions='translucent')
+        self.addItem(self._boundary_outline)
+        self._boundary_center = gl.GLScatterPlotItem(
+            color=COLOR_BOUNDARY_CENTER, size=13)
+        self.addItem(self._boundary_center)
+        self._boundary_cross = gl.GLLinePlotItem(
+            mode="lines", width=3, glOptions='translucent')
+        self.addItem(self._boundary_cross)
 
         # 当前正在执行的指令：紫色剩余路径、蓝色当前朝向、黄色转向弧。
         self._command_line = gl.GLLinePlotItem(
@@ -248,8 +261,57 @@ class TrajectoryPlot3D(gl.GLViewWidget):
         self._clear_pts.clear()
         self.set_ideal_path(None)
         self.set_current_command(None)
+        self.set_boundary_region(None)
         self._update()
         self._reset_camera()
+
+    def set_boundary_region(self, region):
+        """显示自动动作的长方形限制范围。"""
+        empty = np.zeros((0, 3), dtype=np.float32)
+        if not region:
+            self._boundary_outline.setData(
+                pos=empty, color=_repeat_color(COLOR_BOUNDARY, 0)
+            )
+            self._boundary_center.setData(pos=empty)
+            self._boundary_cross.setData(
+                pos=empty, color=_repeat_color(COLOR_BOUNDARY, 0)
+            )
+            return
+        try:
+            center = np.array(region["center"], dtype=np.float32)[:3]
+            corners = np.array(region["corners"], dtype=np.float32)[:, :3]
+        except (KeyError, TypeError, ValueError, IndexError):
+            return
+        if len(center) != 3 or len(corners) != 4:
+            return
+        outline = np.vstack((corners, corners[0]))
+        outline[:, 2] = 0.025
+        center_floor = center.copy()
+        center_floor[2] = 0.04
+        self._boundary_outline.setData(
+            pos=outline, color=_repeat_color(COLOR_BOUNDARY, len(outline))
+        )
+        self._boundary_center.setData(pos=center_floor.reshape(1, 3))
+
+        cross_size = max(
+            0.08,
+            min(
+                float(np.linalg.norm(corners[0, :2] - corners[1, :2])),
+                float(np.linalg.norm(corners[1, :2] - corners[2, :2])),
+            ) * 0.12,
+        )
+        yaw = float(region.get("yaw", 0.0))
+        forward = np.array([math.cos(yaw), math.sin(yaw), 0.0], dtype=np.float32)
+        left = np.array([-math.sin(yaw), math.cos(yaw), 0.0], dtype=np.float32)
+        cross = np.array([
+            center_floor - forward * cross_size,
+            center_floor + forward * cross_size,
+            center_floor - left * cross_size,
+            center_floor + left * cross_size,
+        ], dtype=np.float32)
+        self._boundary_cross.setData(
+            pos=cross, color=_repeat_color(COLOR_BOUNDARY, len(cross))
+        )
 
     def set_ideal_path(self, points):
         """设置指令轨迹；折线、目标点和箭头共同显示每段移动效果。"""

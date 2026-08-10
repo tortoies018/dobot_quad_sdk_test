@@ -1,4 +1,5 @@
 import math
+import time
 import unittest
 
 from http_auto_move.http_worker import HttpAutoMoveWorker
@@ -187,6 +188,110 @@ class WorkerSequenceTest(unittest.TestCase):
             ),
             "↺",
         )
+
+    def test_boundary_geometry_uses_set_pose_as_oriented_center(self):
+        boundary = HttpAutoMoveWorker._boundary_geometry(
+            [10.0, 20.0, 0.3], length=4.0, width=2.0, yaw=0.0
+        )
+        self.assertEqual(boundary["center"], [10.0, 20.0, 0.3])
+        expected = (
+            [12.0, 21.0, 0.3],
+            [12.0, 19.0, 0.3],
+            [8.0, 19.0, 0.3],
+            [8.0, 21.0, 0.3],
+        )
+        for actual, wanted in zip(boundary["corners"], expected):
+            for value, target in zip(actual, wanted):
+                self.assertAlmostEqual(value, target)
+
+    def test_boundary_detection_respects_set_yaw(self):
+        boundary = HttpAutoMoveWorker._boundary_geometry(
+            [0.0, 0.0, 0.0], length=4.0, width=2.0, yaw=math.pi / 2.0
+        )
+        self.assertFalse(
+            HttpAutoMoveWorker._boundary_outside([0.9, 1.9, 0.0], boundary)
+        )
+        self.assertTrue(
+            HttpAutoMoveWorker._boundary_outside([1.01, 0.0, 0.0], boundary)
+        )
+        self.assertTrue(
+            HttpAutoMoveWorker._boundary_outside([0.0, 2.01, 0.0], boundary)
+        )
+
+    def test_drive_stops_before_command_when_already_outside_boundary(self):
+        worker = HttpAutoMoveWorker()
+        client = _FakeClient()
+        worker._alive.set()
+        with worker._pose_lock:
+            worker._latest_position = [1.1, 0.0, 0.0]
+            worker._latest_position_at = time.monotonic()
+        boundary = worker._boundary_geometry(
+            [0.0, 0.0, 0.0], length=2.0, width=1.0, yaw=0.0
+        )
+        result, center_error = worker._drive_once(
+            client,
+            "test",
+            {"move_x": 0, "move_y": 5000, "turn_x": 0, "turn_y": 0},
+            duration=1.0,
+            rate_hz=10.0,
+            cycle=1,
+            total=1,
+            boundary=boundary,
+        )
+        self.assertEqual(result, "outside")
+        self.assertAlmostEqual(center_error, 1.1)
+        self.assertTrue(all(value == 0 for value in client.calls[-1].values()))
+        self.assertFalse(any(call["move_y"] == 5000 for call in client.calls))
+
+    def test_execute_inserts_return_center_then_continues_pair(self):
+        worker = HttpAutoMoveWorker()
+        client = _FakeClient()
+        worker._client = client
+        worker._alive.set()
+        drive_results = iter((("outside", 1.1), ("completed", 0.0)))
+        driven_segments = []
+        recovery_calls = []
+
+        def fake_drive(_client, name, _axes, _duration, _rate, _cycle, _total,
+                       *, boundary=None):
+            driven_segments.append((name, boundary))
+            return next(drive_results)
+
+        def fake_recovery(_client, boundary, amplitude):
+            recovery_calls.append((boundary, amplitude))
+            return "reached", 0.03
+
+        worker._drive_once = fake_drive
+        worker._return_to_boundary_center = fake_recovery
+        logs = []
+        worker.log_msg.connect(logs.append)
+        worker._execute({
+            "name": "前后来回",
+            "segments": [
+                {"name": "前进", "move_y": 5000, "duration": 1.0},
+                {"name": "后退", "move_y": -5000, "duration": 1.0},
+            ],
+            "repetitions": 1,
+            "settle_time": 0.0,
+            "rate_hz": 10.0,
+            "prepare_action_id": None,
+            "boundary": worker._boundary_geometry(
+                [0.0, 0.0, 0.0], length=2.0, width=1.0, yaw=0.0
+            ),
+        })
+        self.assertEqual(len(driven_segments), 2)
+        self.assertEqual(len(recovery_calls), 1)
+        self.assertEqual(recovery_calls[0][1], 5000)
+        self.assertTrue(any("插入回中心指令" in line for line in logs))
+        self.assertTrue(any("越界回中心完成: 中心误差=0.0300m" in line for line in logs))
+
+    def test_return_center_axes_follow_current_http_yaw(self):
+        axes = HttpAutoMoveWorker._axes_to_world_target(
+            [0.0, 0.0, 0.0], [0.0, 1.0, 0.0],
+            yaw=math.pi / 2.0, amplitude=5000, tolerance=0.05,
+        )
+        self.assertEqual(axes["move_x"], 0)
+        self.assertGreater(axes["move_y"], 0)
 
 
 if __name__ == "__main__":
