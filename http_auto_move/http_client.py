@@ -6,7 +6,10 @@
 from __future__ import annotations
 
 import json
+import mimetypes
 import time
+import uuid
+from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
@@ -108,6 +111,62 @@ class MH4HttpClient:
         if not path.startswith("/") or path.startswith("//"):
             raise ValueError("接口路径必须以单个 / 开头")
         return self._request(method, path, payload, allow_non_json=True)
+
+    def upload_audio_file(self, payload: dict[str, Any]) -> Any:
+        """调用 multipart 音频上传接口。"""
+        file_path = Path(str(payload.get("file", ""))).expanduser()
+        if not file_path.is_file():
+            raise ValueError("请选择有效的音频文件")
+        boundary = f"----MH4HttpConsole{uuid.uuid4().hex}"
+        chunks: list[bytes] = []
+        for key in ("name", "type", "time"):
+            value = str(payload.get(key, ""))
+            chunks.extend((
+                f"--{boundary}\r\n".encode(),
+                f'Content-Disposition: form-data; name="{key}"\r\n\r\n'.encode(),
+                value.encode("utf-8"),
+                b"\r\n",
+            ))
+        content_type = mimetypes.guess_type(file_path.name)[0] or "application/octet-stream"
+        chunks.extend((
+            f"--{boundary}\r\n".encode(),
+            (
+                f'Content-Disposition: form-data; name="file"; '
+                f'filename="{file_path.name}"\r\n'
+            ).encode("utf-8"),
+            f"Content-Type: {content_type}\r\n\r\n".encode(),
+            file_path.read_bytes(),
+            b"\r\n",
+            f"--{boundary}--\r\n".encode(),
+        ))
+        request = Request(
+            f"{self.control_base}/upload/formdata/audio",
+            data=b"".join(chunks),
+            headers={
+                "Accept": "application/json",
+                "Content-Type": f"multipart/form-data; boundary={boundary}",
+            },
+            method="POST",
+        )
+        try:
+            with urlopen(request, timeout=self.timeout) as response:
+                raw = response.read()
+        except HTTPError as exc:
+            detail = exc.read().decode("utf-8", errors="replace").strip()
+            suffix = f": {detail}" if detail else ""
+            raise MH4HttpError(f"HTTP {exc.code} POST /upload/formdata/audio{suffix}") from exc
+        except (URLError, TimeoutError, OSError) as exc:
+            reason = getattr(exc, "reason", exc)
+            raise MH4HttpError(
+                f"请求失败 POST /upload/formdata/audio: {reason}"
+            ) from exc
+        if not raw:
+            return {}
+        try:
+            return json.loads(raw.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            preview = raw[:160].decode("utf-8", errors="replace")
+            raise MH4HttpError(f"接口返回的不是有效 JSON: {preview!r}") from exc
 
     @staticmethod
     def _require_success(result: Any, operation: str) -> Any:

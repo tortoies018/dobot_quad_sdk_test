@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import tempfile
 import unittest
 from unittest.mock import patch
 from urllib.parse import urlsplit
@@ -36,7 +37,11 @@ class MH4HttpClientTest(unittest.TestCase):
 
     def _urlopen(self, request, timeout):
         parsed = urlsplit(request.full_url)
-        payload = json.loads(request.data.decode("utf-8")) if request.data else None
+        content_type = request.get_header("Content-type", "")
+        if content_type.startswith("multipart/form-data"):
+            payload = request.data
+        else:
+            payload = json.loads(request.data.decode("utf-8")) if request.data else None
         key = (request.get_method(), parsed.path)
         self.requests.append((*key, payload))
         return _Response(self.responses.get(key, {"status": True}))
@@ -102,6 +107,22 @@ class MH4HttpClientTest(unittest.TestCase):
             self.client.raw_request("GET", "http://example.com/path")
         with self.assertRaises(ValueError):
             self.client.raw_request("GET", "//example.com/path")
+
+    def test_audio_upload_builds_multipart_form(self):
+        with tempfile.NamedTemporaryFile(suffix=".wav") as audio:
+            audio.write(b"RIFF-test-audio")
+            audio.flush()
+            result = self.client.upload_audio_file({
+                "name": "test",
+                "type": "audio",
+                "time": "2026-08-10 10:00:00",
+                "file": audio.name,
+            })
+        self.assertTrue(result["status"])
+        method, path, body = self.requests[-1]
+        self.assertEqual((method, path), ("POST", "/upload/formdata/audio"))
+        self.assertIn(b'name="file"', body)
+        self.assertIn(b"RIFF-test-audio", body)
 
     def test_emergency_stop(self):
         self.client.emergency_stop(True)

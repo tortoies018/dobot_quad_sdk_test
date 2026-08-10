@@ -123,6 +123,22 @@ _SPECS = (
 )
 
 
+_LEGS = (
+    "left_front_leg",
+    "right_front_leg",
+    "left_rear_leg",
+    "right_rear_leg",
+)
+
+
+def _joint_limits(field: str, limits: list[list[float]]) -> dict[str, Any]:
+    return {field: {leg: copy_limits(limits) for leg in _LEGS}}
+
+
+def copy_limits(limits: list[list[float]]) -> list[list[float]]:
+    return [list(pair) for pair in limits]
+
+
 _PAYLOADS: dict[str, Any] = {
     "/connection/state": {
         "currentClient": 1,
@@ -130,6 +146,17 @@ _PAYLOADS: dict[str, Any] = {
         "connectionType": "Station",
     },
     "/connection/type": {"value": "Station"},
+    "/settings/posLimit": _joint_limits(
+        "jointsPosLimit", [[-12.5664, 12.5664]] * 4
+    ),
+    "/settings/velLimit": _joint_limits(
+        "jointsVelLimit", [[-34.5575, 34.5575]] * 4
+    ),
+    "/settings/torqueLimit": _joint_limits(
+        "jointsTorqueLimit", [[-20.0, 20.0], [-20.0, 20.0], [-40.0, 20.0], [-20.0, 20.0]]
+    ),
+    "/settings/kpLimit": _joint_limits("jointsKpLimit", [[0.0, 500.0]] * 4),
+    "/settings/kdLimit": _joint_limits("jointsKdLimit", [[0.0, 50.0]] * 4),
     "/settings/emergencyStop": {"value": True},
     "/settings/movement/joystickControl": {
         "btn_move": {"x": 0, "y": 0},
@@ -157,6 +184,14 @@ _PAYLOADS: dict[str, Any] = {
     "/settings/voice/property": {"type": 1, "cycleTime": 1},
     "/settings/bmsLog": {"index": 1},
     "/settings/streaming/switch": {"camera": "front"},
+    "/settings/streaming/agora/start": {
+        "publisherToken": "",
+        "publisherId": "",
+        "channelName": "",
+        "appId": "",
+        "expireTime": 0,
+        "camera": "front",
+    },
     "/settings/uwbWhitelist": {"name": "inffniv1-xxxxxxxx"},
     "/settings/customParams": {"LvYuan": {"welcomeSwitch": True}},
     "/calibrate/joints": {
@@ -168,6 +203,21 @@ _PAYLOADS: dict[str, Any] = {
     "/interface/AP": {"ssid": "ssid_name", "passWd": "password"},
     "/properties/deviceProfile": {"name": "MH4", "remark": ""},
     "/properties/countryCode": {"countryCode": "CN"},
+    "/download/logs/upload": {
+        "date": "2026-01-01T00",
+        "logserver": "https://dobotex-api-dev.dobot.cc",
+        "module": "controller",
+        "osVersion": "",
+        "appVersion": "",
+        "deviceModel": "",
+        "userAccount": "",
+    },
+    "/upload/formdata/audio": {
+        "name": "audio",
+        "type": "audio",
+        "time": "2026-01-01 00:00:00",
+        "file": "",
+    },
     "/upload/url/audio": {
         "name": "audio",
         "type": "audio",
@@ -191,7 +241,21 @@ _PAYLOADS: dict[str, Any] = {
     "/algs/slam/stopPosition": {"name": "mapName"},
     "/algs/slam/postion": {"name": "mapName"},
     "/algs/slam/queryProgressing": ["mapName"],
+    "/algs/slam/roadNetwork": {
+        "name": "mapName",
+        "roadNetworkPoints": [
+            {"id": 1, "name": "point1", "next": 0,
+             "pose": {"x": 0.0, "y": 0.0, "z": 0.0, "rad": 0.0, "type": "map"}}
+        ],
+    },
+    "/algs/slam/startNetworkPatrol": {
+        "name": "mapName", "roadNetworkPoints": [1], "repeatCount": 1,
+    },
     "/algs/slam/updateNetworkPatrolStatus": {"name": "mapName", "status": "pause"},
+    "/algs/slam/startSinglePointPatrol": {
+        "name": "mapName",
+        "position": {"x": 0.0, "y": 0.0, "z": 0.0, "rad": 0.0, "type": "map"},
+    },
     "/algs/slam/updateSinglePointPatrolStatus": {"name": "mapName", "status": "pause"},
     "/algs/settings/movement/obstacleAvoidance": {"open": True},
     "/algs/settings/movement/speedMode": {"mode": "low"},
@@ -213,7 +277,6 @@ _NO_BODY_POSTS = {
     "/settings/voice/stop",
     "/settings/uwbUnbind",
     "/calibrate/imu",
-    "/download/logs/upload",
     "/project/stop",
     "/algs/calibrate/box",
 }
@@ -276,4 +339,3 @@ ENDPOINTS = tuple(
     for category, name, methods, path in _SPECS
     for method in methods.split(",")
 )
-

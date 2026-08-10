@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import copy
 import json
 import math
 import sys
 import time
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlencode
 
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QTextCursor
@@ -16,7 +18,9 @@ from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
     QDoubleSpinBox,
+    QFileDialog,
     QFormLayout,
+    QGridLayout,
     QGroupBox,
     QHBoxLayout,
     QLabel,
@@ -25,6 +29,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPlainTextEdit,
     QPushButton,
+    QScrollArea,
     QSpinBox,
     QSplitter,
     QTabWidget,
@@ -76,6 +81,10 @@ class MainWindow(QMainWindow):
         self._last_position: list[float] | None = None
         self._action_configs: list[dict[str, Any]] = []
         self._api_request_pending = False
+        self._selected_api_endpoint: ApiEndpoint | None = None
+        self._api_payload_template: Any | None = None
+        self._api_param_widgets: dict[tuple[Any, ...], QWidget] = {}
+        self._api_query_widgets: dict[str, QLineEdit] = {}
 
         central = QWidget()
         self.setCentralWidget(central)
@@ -179,8 +188,8 @@ class MainWindow(QMainWindow):
         layout = QVBoxLayout(tab)
 
         note = QLabel(
-            "接口目录来自《MH4 HTTP接口定义》。路径和 JSON 可编辑；22000 为控制器，"
-            "22002 为算法服务。带 ⚠ 的接口会强制二次确认。"
+            "按钮目录来自《MH4 HTTP接口定义》：蓝色为读取，橙色为控制，红色为"
+            "高风险控制。参数使用开关、下拉框和数值框，不需要填写 JSON。"
         )
         note.setWordWrap(True)
         note.setStyleSheet(
@@ -189,46 +198,57 @@ class MainWindow(QMainWindow):
         )
         layout.addWidget(note)
 
-        form = QFormLayout()
-        self.api_endpoint_combo = QComboBox()
-        self.api_endpoint_combo.setEditable(True)
-        self.api_endpoint_combo.setInsertPolicy(QComboBox.NoInsert)
-        self.api_endpoint_combo.setMaxVisibleItems(24)
-        self.api_endpoint_combo.setStyleSheet(self._input_style())
-        for endpoint in ENDPOINTS:
-            self.api_endpoint_combo.addItem(endpoint.label, endpoint)
-        safe_index = next(
-            index
-            for index, endpoint in enumerate(ENDPOINTS)
-            if endpoint.method == "GET" and endpoint.path == "/settings/version"
-        )
-        self.api_endpoint_combo.setCurrentIndex(safe_index)
-        form.addRow("接口目录:", self.api_endpoint_combo)
+        filters = QHBoxLayout()
+        self.api_category_combo = QComboBox()
+        self.api_category_combo.addItem("全部分类")
+        for category in dict.fromkeys(endpoint.category for endpoint in ENDPOINTS):
+            self.api_category_combo.addItem(category)
+        self.api_category_combo.setStyleSheet(self._input_style())
+        filters.addWidget(self.api_category_combo)
+        self.api_search_edit = QLineEdit()
+        self.api_search_edit.setPlaceholderText("搜索接口名称，例如：急停、动作、SLAM")
+        self.api_search_edit.setClearButtonEnabled(True)
+        self.api_search_edit.setStyleSheet(self._input_style())
+        filters.addWidget(self.api_search_edit, 1)
+        layout.addLayout(filters)
 
-        route = QHBoxLayout()
-        self.api_method_combo = QComboBox()
-        self.api_method_combo.addItems(["GET", "POST"])
-        self.api_method_combo.setStyleSheet(self._input_style())
-        route.addWidget(self.api_method_combo)
-        self.api_port_spin = QSpinBox()
-        self.api_port_spin.setRange(1, 65535)
-        self.api_port_spin.setValue(22000)
-        self.api_port_spin.setStyleSheet(self._input_style())
-        route.addWidget(self.api_port_spin)
-        self.api_path_edit = QLineEdit()
-        self.api_path_edit.setStyleSheet(self._input_style())
-        route.addWidget(self.api_path_edit, 1)
-        form.addRow("方法 / 端口 / 路径:", route)
-        layout.addLayout(form)
-
-        layout.addWidget(QLabel("请求 JSON（GET 或无请求体时留空）:"))
-        self.api_body_edit = QPlainTextEdit()
-        self.api_body_edit.setPlaceholderText("{}")
-        self.api_body_edit.setStyleSheet(
-            "background:#101214; color:#e6edf3; font:12px monospace; "
-            "border:1px solid #3a3d42;"
+        self.api_button_widget = QWidget()
+        self.api_button_widget.setStyleSheet("background:#292b30;")
+        self.api_button_grid = QGridLayout(self.api_button_widget)
+        self.api_button_grid.setContentsMargins(2, 2, 2, 2)
+        self.api_button_grid.setSpacing(6)
+        button_scroll = QScrollArea()
+        button_scroll.setWidgetResizable(True)
+        button_scroll.setMinimumHeight(175)
+        button_scroll.setWidget(self.api_button_widget)
+        button_scroll.setStyleSheet(
+            "QScrollArea { border:1px solid #42464c; background:#292b30; }"
         )
-        layout.addWidget(self.api_body_edit, 2)
+        layout.addWidget(button_scroll, 2)
+
+        self.api_selected_label = QLabel("请选择一个接口按钮")
+        self.api_selected_label.setWordWrap(True)
+        self.api_selected_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        self.api_selected_label.setStyleSheet(
+            "color:#bbdefb; background:#25272b; border:1px solid #455a64; "
+            "border-radius:4px; padding:6px; font:12px monospace;"
+        )
+        layout.addWidget(self.api_selected_label)
+
+        self.api_param_widget = QWidget()
+        self.api_param_widget.setStyleSheet(
+            "QWidget { background:#292b30; color:#e0e0e0; }"
+        )
+        self.api_param_form = QFormLayout(self.api_param_widget)
+        self.api_param_form.setContentsMargins(4, 4, 4, 4)
+        param_scroll = QScrollArea()
+        param_scroll.setWidgetResizable(True)
+        param_scroll.setMinimumHeight(120)
+        param_scroll.setWidget(self.api_param_widget)
+        param_scroll.setStyleSheet(
+            "QScrollArea { border:1px solid #42464c; background:#292b30; }"
+        )
+        layout.addWidget(param_scroll, 2)
 
         buttons = QHBoxLayout()
         self.api_confirm_check = QCheckBox("普通 POST 也确认")
@@ -236,7 +256,7 @@ class MainWindow(QMainWindow):
         self.api_confirm_check.setStyleSheet("color:#ffb74d;")
         buttons.addWidget(self.api_confirm_check)
         buttons.addStretch()
-        self.api_send_button = QPushButton("发送 HTTP 请求")
+        self.api_send_button = QPushButton("请选择接口")
         self.api_send_button.setStyleSheet(self._button_style("#1565c0", "#1e88e5"))
         self.api_send_button.clicked.connect(self._send_manual_api)
         buttons.addWidget(self.api_send_button)
@@ -251,8 +271,14 @@ class MainWindow(QMainWindow):
         )
         layout.addWidget(self.api_response_edit, 2)
 
-        self.api_endpoint_combo.currentIndexChanged.connect(self._on_api_selected)
-        self._on_api_selected(self.api_endpoint_combo.currentIndex())
+        self.api_category_combo.currentTextChanged.connect(self._refresh_api_buttons)
+        self.api_search_edit.textChanged.connect(self._refresh_api_buttons)
+        self._refresh_api_buttons()
+        safe_endpoint = next(
+            endpoint for endpoint in ENDPOINTS
+            if endpoint.method == "GET" and endpoint.path == "/settings/version"
+        )
+        self._select_api_endpoint(safe_endpoint)
         return tab
 
     def _build_action_group(self) -> QGroupBox:
@@ -429,19 +455,271 @@ class MainWindow(QMainWindow):
 
     # ── 交互 ─────────────────────────────────────
 
-    def _on_api_selected(self, index: int) -> None:
-        endpoint = self.api_endpoint_combo.itemData(index)
-        if not isinstance(endpoint, ApiEndpoint):
-            return
-        self.api_method_combo.setCurrentText(endpoint.method)
-        self.api_port_spin.setValue(endpoint.port)
-        self.api_path_edit.setText(endpoint.path)
-        if endpoint.payload is None:
-            self.api_body_edit.clear()
-        else:
-            self.api_body_edit.setPlainText(
-                json.dumps(endpoint.payload, ensure_ascii=False, indent=2)
+    def _refresh_api_buttons(self, *_args: Any) -> None:
+        while self.api_button_grid.count():
+            item = self.api_button_grid.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.deleteLater()
+
+        category = self.api_category_combo.currentText()
+        keyword = self.api_search_edit.text().strip().lower()
+        visible = []
+        for endpoint in ENDPOINTS:
+            if category != "全部分类" and endpoint.category != category:
+                continue
+            haystack = f"{endpoint.category} {endpoint.name} {endpoint.path}".lower()
+            if keyword and keyword not in haystack:
+                continue
+            visible.append(endpoint)
+
+        for index, endpoint in enumerate(visible):
+            button = QPushButton(f"{endpoint.name}\n{endpoint.method} :{endpoint.port}")
+            if endpoint.dangerous:
+                colors = ("#9f1d20", "#c62828")
+            elif endpoint.method == "GET":
+                colors = ("#1565c0", "#1e88e5")
+            else:
+                colors = ("#c45b00", "#ef6c00")
+            button.setStyleSheet(self._button_style(*colors, compact=True))
+            button.setMinimumHeight(48)
+            button.setToolTip(endpoint.path)
+            button.clicked.connect(
+                lambda _checked=False, selected=endpoint: self._select_api_endpoint(selected)
             )
+            self.api_button_grid.addWidget(button, index // 2, index % 2)
+
+        if not visible:
+            empty = QLabel("没有匹配的接口")
+            empty.setAlignment(Qt.AlignCenter)
+            empty.setStyleSheet("color:#a8b3bc; padding:20px;")
+            self.api_button_grid.addWidget(empty, 0, 0, 1, 2)
+            self._selected_api_endpoint = None
+            while self.api_param_form.rowCount():
+                self.api_param_form.removeRow(0)
+            self._api_param_widgets.clear()
+            self._api_query_widgets.clear()
+            self._api_payload_template = None
+            self.api_selected_label.setText("没有匹配的接口")
+            self.api_send_button.setText("请选择接口")
+            self.api_send_button.setEnabled(False)
+        elif self._selected_api_endpoint not in visible:
+            self._select_api_endpoint(visible[0])
+
+    def _select_api_endpoint(self, endpoint: ApiEndpoint) -> None:
+        self._selected_api_endpoint = endpoint
+        risk = "　⚠ 高风险" if endpoint.dangerous else ""
+        self.api_selected_label.setText(
+            f"{endpoint.category} / {endpoint.name}{risk}\n"
+            f"{endpoint.method}　端口 {endpoint.port}　{endpoint.path}"
+        )
+        while self.api_param_form.rowCount():
+            self.api_param_form.removeRow(0)
+        self._api_param_widgets.clear()
+        self._api_query_widgets.clear()
+        self._api_payload_template = copy.deepcopy(endpoint.payload)
+
+        if "?" in endpoint.path:
+            query = endpoint.path.split("?", 1)[1]
+            for item in query.split("&"):
+                key, _, default = item.partition("=")
+                edit = QLineEdit("" if default in ("xxxxxx", "mapName") else default)
+                edit.setPlaceholderText(default)
+                edit.setStyleSheet(self._input_style())
+                self._api_query_widgets[key] = edit
+                self.api_param_form.addRow(f"查询参数 {key}:", edit)
+
+        added = False
+        if self._api_payload_template is not None:
+            added = self._add_api_payload_controls(
+                self._api_payload_template, (), endpoint.path
+            )
+        if not self._api_query_widgets and not added:
+            message = (
+                "此接口不需要参数"
+                if endpoint.payload is None
+                else "文档未提供可展开参数，将按空对象发送"
+            )
+            label = QLabel(message)
+            label.setStyleSheet("color:#a8b3bc; padding:6px;")
+            self.api_param_form.addRow(label)
+
+        verb = "读取" if endpoint.method == "GET" else "执行"
+        self.api_send_button.setText(f"{verb}：{endpoint.name}")
+        self.api_send_button.setEnabled(
+            self._connected and not self._moving and not self._api_request_pending
+        )
+
+    def _add_api_payload_controls(
+        self,
+        value: Any,
+        field_path: tuple[Any, ...],
+        endpoint_path: str,
+    ) -> bool:
+        added = False
+        if isinstance(value, dict):
+            for key, child in value.items():
+                added = self._add_api_payload_controls(
+                    child, field_path + (key,), endpoint_path
+                ) or added
+            return added
+        if isinstance(value, list):
+            for index, child in enumerate(value):
+                added = self._add_api_payload_controls(
+                    child, field_path + (index,), endpoint_path
+                ) or added
+            return added
+
+        field_key = ".".join(str(item) for item in field_path)
+        label_text = self._api_field_label(field_path)
+        choices = self._api_parameter_choices(endpoint_path, field_key)
+        if choices:
+            widget = QComboBox()
+            for text_value, data_value in choices:
+                widget.addItem(text_value, data_value)
+            match = widget.findData(value)
+            if match >= 0:
+                widget.setCurrentIndex(match)
+            widget.setStyleSheet(self._input_style())
+        elif isinstance(value, bool):
+            widget = QCheckBox("开启 / 是")
+            widget.setChecked(value)
+            widget.setStyleSheet("color:#e0e0e0;")
+        elif isinstance(value, int):
+            widget = QSpinBox()
+            minimum, maximum = self._api_integer_range(endpoint_path, field_key)
+            widget.setRange(minimum, maximum)
+            widget.setValue(max(minimum, min(maximum, value)))
+            widget.setStyleSheet(self._input_style())
+        elif isinstance(value, float):
+            widget = QDoubleSpinBox()
+            widget.setRange(-1_000_000.0, 1_000_000.0)
+            widget.setDecimals(4)
+            widget.setValue(value)
+            widget.setStyleSheet(self._input_style())
+        elif endpoint_path == "/upload/formdata/audio" and field_key == "file":
+            row = QWidget()
+            row_layout = QHBoxLayout(row)
+            row_layout.setContentsMargins(0, 0, 0, 0)
+            widget = QLineEdit(str(value))
+            widget.setReadOnly(True)
+            widget.setPlaceholderText("请选择音频文件")
+            widget.setStyleSheet(self._input_style())
+            row_layout.addWidget(widget, 1)
+            choose = QPushButton("选择文件")
+            choose.setStyleSheet(self._button_style("#455a64", "#607d8b", compact=True))
+            choose.clicked.connect(lambda: self._choose_api_audio_file(widget))
+            row_layout.addWidget(choose)
+            self._api_param_widgets[field_path] = widget
+            self.api_param_form.addRow(f"{label_text}:", row)
+            return True
+        else:
+            widget = QLineEdit("" if value is None else str(value))
+            widget.setStyleSheet(self._input_style())
+
+        self._api_param_widgets[field_path] = widget
+        self.api_param_form.addRow(f"{label_text}:", widget)
+        return True
+
+    def _choose_api_audio_file(self, target: QLineEdit) -> None:
+        path, _selected_filter = QFileDialog.getOpenFileName(
+            self,
+            "选择要上传的音频文件",
+            "",
+            "音频文件 (*.wav *.mp3 *.aac *.m4a *.ogg);;所有文件 (*)",
+        )
+        if path:
+            target.setText(path)
+
+    @staticmethod
+    def _api_field_label(field_path: tuple[Any, ...]) -> str:
+        text = ""
+        for item in field_path:
+            if isinstance(item, int):
+                text += f"[{item}]"
+            else:
+                text += ("." if text else "") + str(item)
+        return text
+
+    @staticmethod
+    def _api_parameter_choices(
+        endpoint_path: str, field_key: str
+    ) -> list[tuple[str, Any]]:
+        choices = {
+            ("/connection/state", "connectionType"): [
+                ("Station", "Station"), ("AP", "AP"), ("4G", "4G")
+            ],
+            ("/connection/type", "value"): [("Station", "Station"), ("AP", "AP")],
+            ("/settings/streaming/record", "action"): [("开始", "start"), ("停止", "stop")],
+            ("/settings/streaming/record", "camera"): [("前摄像头", "front"), ("后摄像头", "back")],
+            ("/settings/streaming/switch", "camera"): [("前摄像头", "front"), ("后摄像头", "back")],
+            ("/settings/streaming/agora/start", "camera"): [("前摄像头", "front"), ("后摄像头", "back")],
+            ("/settings/language", "language"): [("中文", "zh-Hans"), ("英文", "en")],
+            ("/settings/voice/property", "type"): [("循环", 0), ("单次", 1), ("多次", 2)],
+            ("/upload/url/audio", "type"): [("音频", "audio"), ("喊话", "shout")],
+            ("/upload/formdata/audio", "type"): [("音频", "audio"), ("喊话", "shout")],
+            ("/upload/tts/audio", "type"): [("文字转语音", "tts"), ("音频", "audio"), ("喊话", "shout")],
+            ("/download/logs/upload", "module"): [("控制器", "controller"), ("算法", "algorithm"), ("全部", "all")],
+            ("/algs/slam/new", "action"): [("开始", "start"), ("停止", "stop"), ("取消", "cancel")],
+            ("/algs/slam/initPosition", "type"): [("地图坐标", "map"), ("图像坐标", "image")],
+            ("/algs/slam/roadNetwork", "roadNetworkPoints.0.pose.type"): [("地图坐标", "map"), ("图像坐标", "image")],
+            ("/algs/slam/startSinglePointPatrol", "position.type"): [("地图坐标", "map"), ("图像坐标", "image")],
+            ("/algs/slam/updateNetworkPatrolStatus", "status"): [("暂停", "pause"), ("巡逻", "patrolling"), ("取消", "cancel")],
+            ("/algs/slam/updateSinglePointPatrolStatus", "status"): [("暂停", "pause"), ("巡逻", "patrolling"), ("取消", "cancel")],
+            ("/algs/settings/movement/speedMode", "mode"): [("低速", "low"), ("高速", "high")],
+            ("/algs/settings/autoIntelligence/follow", "open"): [("关闭", 0), ("开启", 1), ("预跟随", 2)],
+            ("/algs/settings/autoIntelligence/follow", "type"): [("后跟随", "rear"), ("前跟随", "front")],
+            ("/algs/settings/autoIntelligence/follow", "distance"): [("1.5 m", 1.5), ("3.0 m", 3.0)],
+        }
+        return choices.get((endpoint_path, field_key), [])
+
+    @staticmethod
+    def _api_integer_range(endpoint_path: str, field_key: str) -> tuple[int, int]:
+        if endpoint_path == "/settings/movement/joystickControl" and field_key.endswith((".x", ".y")):
+            return -32768, 32767
+        if field_key == "currentClient":
+            return 1, 4
+        if field_key in ("id", "index", "repeatCount", "cycleTime"):
+            return 0, 1_000_000
+        if field_key == "volume":
+            return 0, 100
+        if field_key == "ratio":
+            return 10, 100
+        if field_key == "role":
+            return 1, 2
+        return -1_000_000_000, 1_000_000_000
+
+    def _read_api_payload(self, value: Any, field_path: tuple[Any, ...] = ()) -> Any:
+        if isinstance(value, dict):
+            return {
+                key: self._read_api_payload(child, field_path + (key,))
+                for key, child in value.items()
+            }
+        if isinstance(value, list):
+            return [
+                self._read_api_payload(child, field_path + (index,))
+                for index, child in enumerate(value)
+            ]
+        widget = self._api_param_widgets[field_path]
+        if isinstance(widget, QComboBox):
+            return widget.currentData()
+        if isinstance(widget, QCheckBox):
+            return widget.isChecked()
+        if isinstance(widget, (QSpinBox, QDoubleSpinBox)):
+            return widget.value()
+        if isinstance(widget, QLineEdit):
+            return widget.text()
+        return value
+
+    def _selected_api_path(self, endpoint: ApiEndpoint) -> str:
+        base = endpoint.path.split("?", 1)[0]
+        if not self._api_query_widgets:
+            return base
+        query = urlencode({
+            key: widget.text().strip()
+            for key, widget in self._api_query_widgets.items()
+        })
+        return f"{base}?{query}"
 
     def _send_manual_api(self) -> None:
         if not self._connected:
@@ -452,41 +730,28 @@ class MainWindow(QMainWindow):
             return
         if self._api_request_pending:
             return
-
-        method = self.api_method_combo.currentText().strip().upper()
-        port = self.api_port_spin.value()
-        path = self.api_path_edit.text().strip()
-        if method not in ("GET", "POST"):
-            QMessageBox.warning(self, "方法错误", "只支持 GET 或 POST。")
-            return
-        if not path.startswith("/") or path.startswith("//"):
-            QMessageBox.warning(self, "路径错误", "接口路径必须以单个 / 开头。")
+        endpoint = self._selected_api_endpoint
+        if endpoint is None:
+            QMessageBox.warning(self, "未选择接口", "请先点击一个接口按钮。")
             return
 
-        body = self.api_body_edit.toPlainText().strip()
-        payload = None
-        if body:
-            try:
-                payload = json.loads(body)
-            except json.JSONDecodeError as exc:
-                QMessageBox.warning(
-                    self,
-                    "JSON 格式错误",
-                    f"第 {exc.lineno} 行第 {exc.colno} 列：{exc.msg}",
-                )
-                return
-
-        endpoint = self.api_endpoint_combo.currentData()
-        catalog_dangerous = (
-            isinstance(endpoint, ApiEndpoint)
-            and endpoint.path == path
-            and endpoint.dangerous
+        method = endpoint.method
+        port = endpoint.port
+        path = self._selected_api_path(endpoint)
+        if any(not widget.text().strip() for widget in self._api_query_widgets.values()):
+            QMessageBox.warning(self, "缺少查询参数", "请填写所有查询参数。")
+            return
+        payload = (
+            self._read_api_payload(self._api_payload_template)
+            if endpoint.method == "POST" and endpoint.payload is not None
+            else None
         )
-        must_confirm = catalog_dangerous or (
-            method == "POST" and self.api_confirm_check.isChecked()
+
+        must_confirm = endpoint.dangerous or (
+            endpoint.method == "POST" and self.api_confirm_check.isChecked()
         )
         if must_confirm:
-            level = "高风险接口" if catalog_dangerous else "写入接口"
+            level = "高风险接口" if endpoint.dangerous else "写入接口"
             answer = QMessageBox.question(
                 self,
                 f"确认{level}",

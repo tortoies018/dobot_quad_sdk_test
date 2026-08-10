@@ -29,6 +29,10 @@ class _FakeManualClient:
         self.calls.append((method, path, payload))
         return {"status": True, "value": "ok"}
 
+    def upload_audio_file(self, payload):
+        self.calls.append(("UPLOAD", "/upload/formdata/audio", payload))
+        return {"status": True, "taskId": "test"}
+
 
 class WorkerSequenceTest(unittest.TestCase):
     @staticmethod
@@ -143,6 +147,21 @@ class WorkerSequenceTest(unittest.TestCase):
         self.assertEqual(redacted["passWd"], "***")
         self.assertEqual(redacted["nested"]["publisherToken"], "***")
         self.assertEqual(payload["passWd"], "secret-password")
+
+    def test_manual_audio_api_uses_multipart_client(self):
+        worker = HttpAutoMoveWorker()
+        client = _FakeManualClient()
+        worker._client = client
+        worker._execute_manual_api({
+            "method": "POST",
+            "path": "/upload/formdata/audio",
+            "port": 22000,
+            "payload": {
+                "name": "test", "type": "audio",
+                "time": "2026-08-10 10:00:00", "file": "/tmp/test.wav",
+            },
+        })
+        self.assertEqual(client.calls[0][0], "UPLOAD")
 
     def test_rotation_error_and_log_direction_symbol(self):
         worker = HttpAutoMoveWorker()

@@ -429,7 +429,15 @@ class HttpAutoMoveWorker(QThread):
                 else " body=" + json.dumps(safe_payload, ensure_ascii=False)
             )
             self._log("API", f"{method} {base}{path}{payload_text}")
-            result = client.raw_request(method, path, payload)
+            if (
+                method == "POST"
+                and path.split("?", 1)[0] == "/upload/formdata/audio"
+            ):
+                if not isinstance(payload, dict):
+                    raise ValueError("音频上传缺少表单参数")
+                result = client.upload_audio_file(payload)
+            else:
+                result = client.raw_request(method, path, payload)
             rejected = isinstance(result, dict) and result.get("status") is False
             result_preview = json.dumps(
                 self._redact_payload(result), ensure_ascii=False, default=str
