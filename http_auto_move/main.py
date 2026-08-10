@@ -351,14 +351,17 @@ class MainWindow(QMainWindow):
         speed = self._stick_spin()
         speed.setValue(5000)
         speed.setSuffix(" 摇杆")
-        speed.setToolTip("转向和向前移动使用的 HTTP 摇杆幅值")
+        speed.setToolTip(
+            "向前移动使用的 HTTP 摇杆幅值；转向采用与此速度关联的短脉冲控制"
+        )
         form.addRow("巡逻速度:", speed)
         segment_length = self._double_spin(0.1, 20.0, 1.0, " m", 2, 0.1)
         segment_length.setToolTip("每次转向完成后计划向前移动的距离")
         form.addRow("每段长度:", segment_length)
         yaw_deadband = self._double_spin(1.0, 30.0, 5.0, " °", 1, 0.5)
         yaw_deadband.setToolTip(
-            "转向结束后的允许偏航误差；首次超时且误差超过此值时补转一次"
+            "转向结束后的允许偏航误差；首次超时且误差超过此值时补转一次，"
+            "补转后的小幅残差由前进过程继续纠正"
         )
         form.addRow("偏航误差死区:", yaw_deadband)
         self._action_configs.append({

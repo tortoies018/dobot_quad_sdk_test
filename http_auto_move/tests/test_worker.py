@@ -420,6 +420,174 @@ class WorkerSequenceTest(unittest.TestCase):
         self.assertTrue(any("补转完成" in line for line in logs))
         self.assertEqual(finished[-1], "随机巡逻完成")
 
+    def test_random_patrol_continues_with_small_residual_after_retry(self):
+        worker = HttpAutoMoveWorker()
+        client = _FakeClient()
+        worker._client = client
+        worker._alive.set()
+        worker._stop_motion.wait = lambda _timeout: False
+        boundary = worker._boundary_geometry(
+            [0.0, 0.0, 0.0], length=4.0, width=2.0, yaw=0.0
+        )
+        worker._motion_pose = lambda _client, _label: (
+            "ready",
+            {"pos": [0.0, 0.0, 0.0], "rpy": [0.0, 0.0, 0.0]},
+        )
+        worker._distant_boundary_target = (
+            lambda _boundary, _margin, *, current_position, rng:
+            ([1.8, 0.0, 0.0], 1.8)
+        )
+        turn_results = iter((("timeout", 8.79), ("timeout", 8.84)))
+        worker._turn_to_patrol_target = lambda *_args, **_kwargs: next(
+            turn_results
+        )
+        drive_calls = []
+
+        def fake_drive(*_args, **_kwargs):
+            drive_calls.append(True)
+            return "reached", 1.0, 0.02
+
+        worker._drive_patrol_segment = fake_drive
+        logs = []
+        worker.log_msg.connect(logs.append)
+        finished = []
+        worker.finished_ok.connect(finished.append)
+        worker._execute({
+            "mode": "random_patrol",
+            "boundary": boundary,
+            "speed": 20000,
+            "segment_length": 1.0,
+            "yaw_deadband": 5.0,
+            "repetitions": 1,
+            "infinite": False,
+            "settle_time": 0.0,
+            "prepare_action_id": None,
+        })
+
+        self.assertEqual(len(drive_calls), 1)
+        self.assertTrue(any("进入前进阶段继续纠偏" in line for line in logs))
+        self.assertEqual(finished[-1], "随机巡逻完成")
+
+    def test_random_patrol_rejects_large_residual_after_retry(self):
+        worker = HttpAutoMoveWorker()
+        client = _FakeClient()
+        worker._client = client
+        worker._alive.set()
+        worker._stop_motion.wait = lambda _timeout: False
+        boundary = worker._boundary_geometry(
+            [0.0, 0.0, 0.0], length=4.0, width=2.0, yaw=0.0
+        )
+        worker._motion_pose = lambda _client, _label: (
+            "ready",
+            {"pos": [0.0, 0.0, 0.0], "rpy": [0.0, 0.0, 0.0]},
+        )
+        worker._distant_boundary_target = (
+            lambda _boundary, _margin, *, current_position, rng:
+            ([1.8, 0.0, 0.0], 1.8)
+        )
+        turn_results = iter((("timeout", 18.0), ("timeout", 16.0)))
+        worker._turn_to_patrol_target = lambda *_args, **_kwargs: next(
+            turn_results
+        )
+        drive_calls = []
+        worker._drive_patrol_segment = lambda *_args, **_kwargs: (
+            drive_calls.append(True) or ("reached", 1.0, 0.02)
+        )
+        finished = []
+        worker.finished_ok.connect(finished.append)
+        worker._execute({
+            "mode": "random_patrol",
+            "boundary": boundary,
+            "speed": 20000,
+            "segment_length": 1.0,
+            "yaw_deadband": 5.0,
+            "repetitions": 1,
+            "infinite": False,
+            "settle_time": 0.0,
+            "prepare_action_id": None,
+        })
+
+        self.assertEqual(drive_calls, [])
+        self.assertIn("转向失败", finished[-1])
+
+    def test_random_patrol_turn_uses_breakaway_pulse_near_target(self):
+        worker = HttpAutoMoveWorker()
+        client = _FakeClient()
+        worker._alive.set()
+        worker._stop_motion.wait = lambda _timeout: False
+        boundary = worker._boundary_geometry(
+            [0.0, 0.0, 0.0], length=4.0, width=4.0, yaw=0.0
+        )
+        target_yaw = math.radians(8.8)
+        yaws = iter((0.0, target_yaw))
+
+        def pose_snapshot():
+            now = time.monotonic()
+            return {
+                "pos": [0.0, 0.0, 0.0],
+                "pos_at": now,
+                "rpy": [0.0, 0.0, next(yaws)],
+                "rpy_at": now,
+            }
+
+        worker._pose_snapshot = pose_snapshot
+        result, error = worker._turn_to_patrol_target(
+            client,
+            boundary,
+            [math.cos(target_yaw), math.sin(target_yaw), 0.0],
+            speed=20000,
+            tolerance=math.radians(5.0),
+            timeout=2.0,
+        )
+
+        commands = [call for call in client.calls if any(call.values())]
+        self.assertEqual(result, "reached")
+        self.assertAlmostEqual(error, 0.0)
+        self.assertEqual(len(commands), 1)
+        self.assertEqual(abs(commands[0]["turn_x"]), 10000)
+        command_index = client.calls.index(commands[0])
+        self.assertTrue(
+            all(value == 0 for value in client.calls[command_index + 1].values())
+        )
+
+    def test_random_patrol_turn_breakaway_scales_with_selected_speed(self):
+        self.assertEqual(HttpAutoMoveWorker._patrol_turn_breakaway(5000), 5000)
+        self.assertEqual(HttpAutoMoveWorker._patrol_turn_breakaway(10000), 8000)
+        self.assertEqual(HttpAutoMoveWorker._patrol_turn_breakaway(20000), 10000)
+
+    def test_random_patrol_turn_does_not_count_pose_wait_as_active_timeout(self):
+        worker = HttpAutoMoveWorker()
+        client = _FakeClient()
+        worker._alive.set()
+        worker._stop_motion.wait = lambda _timeout: False
+        boundary = worker._boundary_geometry(
+            [0.0, 0.0, 0.0], length=4.0, width=4.0, yaw=0.0
+        )
+        poses = iter((
+            {"pos": [0.0, 0.0, 0.0], "rpy": [0.0, 0.0, 0.0]},
+            {"pos": [0.0, 0.0, 0.0], "rpy": [0.0, 0.0, math.pi / 2.0]},
+        ))
+
+        def delayed_motion_pose(_client, _label):
+            pose = next(poses)
+            if pose["rpy"][2] == 0.0:
+                time.sleep(0.02)
+            return "ready", pose
+
+        worker._motion_pose = delayed_motion_pose
+        result, error = worker._turn_to_patrol_target(
+            client,
+            boundary,
+            [0.0, 1.0, 0.0],
+            speed=4000,
+            tolerance=math.radians(5.0),
+            timeout=0.005,
+        )
+
+        self.assertEqual(result, "reached")
+        self.assertAlmostEqual(error, 0.0)
+        self.assertTrue(any(any(call.values()) for call in client.calls))
+
     def test_random_patrol_turn_stops_before_command_when_position_is_outside(self):
         worker = HttpAutoMoveWorker()
         client = _FakeClient()
@@ -520,6 +688,43 @@ class WorkerSequenceTest(unittest.TestCase):
         self.assertTrue(commands)
         self.assertTrue(all(call["move_y"] > 0 for call in commands))
         self.assertTrue(all(call["move_x"] == 0 for call in commands))
+
+    def test_random_patrol_reduces_forward_speed_until_heading_recovers(self):
+        worker = HttpAutoMoveWorker()
+        client = _FakeClient()
+        worker._alive.set()
+        worker._stop_motion.wait = lambda _timeout: False
+        boundary = worker._boundary_geometry(
+            [0.0, 0.0, 0.0], length=4.0, width=2.0, yaw=0.0
+        )
+        positions = iter((0.0, 1.0))
+
+        def pose_snapshot():
+            now = time.monotonic()
+            return {
+                "pos": [next(positions), 0.0, 0.0],
+                "pos_at": now,
+                "rpy": [0.0, 0.0, math.radians(8.84)],
+                "rpy_at": now,
+            }
+
+        worker._pose_snapshot = pose_snapshot
+        result, _traveled, _endpoint_error = worker._drive_patrol_segment(
+            client,
+            boundary,
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            speed=20000,
+            tolerance=0.08,
+            timeout=2.0,
+        )
+
+        commands = [call for call in client.calls if any(call.values())]
+        self.assertEqual(result, "reached")
+        self.assertEqual(len(commands), 1)
+        self.assertGreater(commands[0]["move_y"], 0)
+        self.assertLess(commands[0]["move_y"], 15000)
+        self.assertGreater(commands[0]["turn_x"], 0)
 
     def test_drive_stops_before_command_when_already_outside_boundary(self):
         worker = HttpAutoMoveWorker()
