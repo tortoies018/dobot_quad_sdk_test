@@ -13,7 +13,15 @@
 
 ## 启动
 
-在仓库根目录运行：
+首次安装依赖（Python 3.10 或更高版本）：
+
+```bash
+cd http_auto_move
+python3 -m pip install -r requirements.txt
+cd ..
+```
+
+然后在仓库根目录运行：
 
 ```bash
 python3 -m http_auto_move.main
@@ -161,3 +169,17 @@ HTTP 客户端本身使用 Python 标准库。
 ```bash
 python3 -m unittest discover -s http_auto_move/tests -v
 ```
+
+## 便携打包
+
+进入 `http_auto_move` 目录后执行：
+
+```bash
+./packaging/setup_build_env.sh
+./packaging/build_all.sh
+```
+
+为满足 Gitee 的单文件 100 MB 限制，构建脚本会按 90 MiB 分片。Git 追踪
+`release/*.zip.part-*`、发布说明和 SHA256 校验文件；完整 zip、解压目录和构建缓存
+均被忽略。下载后按 `release/README.txt` 合并分片即可得到原始 zip。Windows 包
+解压后可直接双击 `MH4_HTTP_Auto_Move.exe`，不要求预装 Python。
