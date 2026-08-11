@@ -23,7 +23,8 @@ Ubuntu 22.04/24.04 x86_64
 
 Windows 10/11 x64
 -----------------
-合并并完整解压 windows-x64.zip 后，双击“启动_MH4_HTTP_Auto_Move.cmd”。
+合并并完整解压 windows-x64.zip 后，双击“MH4_HTTP_Auto_Move.exe”。
+也可以双击“启动_MH4_HTTP_Auto_Move.cmd”，效果相同。
 如程序没有显示，运行“诊断启动.cmd”查看错误信息。
 
 注意

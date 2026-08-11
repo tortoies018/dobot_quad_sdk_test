@@ -181,4 +181,5 @@ python3 -m unittest discover -s http_auto_move/tests -v
 
 为满足 Gitee 的单文件 100 MB 限制，构建脚本会按 90 MiB 分片。Git 追踪
 `release/*.zip.part-*`、发布说明和 SHA256 校验文件；完整 zip、解压目录和构建缓存
-均被忽略。下载后按 `release/README.txt` 合并分片即可得到原始 zip。
+均被忽略。下载后按 `release/README.txt` 合并分片即可得到原始 zip。Windows 包
+解压后可直接双击 `MH4_HTTP_Auto_Move.exe`，不要求预装 Python。

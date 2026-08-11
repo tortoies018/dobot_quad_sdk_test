@@ -1,3 +1,3 @@
 @echo off
 cd /d "%~dp0"
-start "" "%~dp0pythonw.exe" "%~dp0main.py"
+start "" "%~dp0MH4_HTTP_Auto_Move.exe"
