@@ -573,35 +573,34 @@ class HttpAutoMoveWorker(QThread):
                     segment -= 1
                     continue
 
-                far_target, far_distance = self._distant_boundary_target(
+                random_target = self._random_boundary_target(
                     boundary,
                     safety_margin,
                     current_position=current,
+                    minimum_distance=position_tolerance,
                     rng=self._random,
                 )
-                if far_distance <= position_tolerance:
-                    failure = (
-                        "安全内缩后的巡逻区域过小，无法生成有效路段；"
-                        "请扩大围栏"
-                    )
-                    break
+                target_distance = math.hypot(
+                    random_target[0] - float(current[0]),
+                    random_target[1] - float(current[1]),
+                )
                 total_text = "∞" if infinite else str(repetitions)
                 target_yaw = math.atan2(
-                    far_target[1] - float(current[1]),
-                    far_target[0] - float(current[0]),
+                    random_target[1] - float(current[1]),
+                    random_target[0] - float(current[0]),
                 )
                 self._log(
                     "PATROL",
-                    f"▶ 巡逻路段 {segment}/{total_text}: 远目标="
-                    f"({far_target[0]:.3f},{far_target[1]:.3f})m，"
-                    f"候选距离={far_distance:.3f}m，"
+                    f"▶ 巡逻路段 {segment}/{total_text}: 随机目标="
+                    f"({random_target[0]:.3f},{random_target[1]:.3f})m，"
+                    f"目标距离={target_distance:.3f}m，"
                     f"目标航向={math.degrees(target_yaw):.1f}°",
                 )
 
                 turn_result, yaw_error = self._turn_to_patrol_target(
                     client,
                     boundary,
-                    far_target,
+                    random_target,
                     speed,
                     yaw_tolerance,
                     timeout=20.0,
@@ -627,7 +626,7 @@ class HttpAutoMoveWorker(QThread):
                     turn_result, yaw_error = self._turn_to_patrol_target(
                         client,
                         boundary,
-                        far_target,
+                        random_target,
                         speed,
                         yaw_tolerance,
                         timeout=20.0,
@@ -694,11 +693,11 @@ class HttpAutoMoveWorker(QThread):
                         failure = f"巡逻路段起点采样失败（{pose_status}）"
                     break
                 move_start = pose["pos"]
-                dx = far_target[0] - float(move_start[0])
-                dy = far_target[1] - float(move_start[1])
+                dx = random_target[0] - float(move_start[0])
+                dy = random_target[1] - float(move_start[1])
                 available_distance = math.hypot(dx, dy)
                 if available_distance <= position_tolerance:
-                    self._log("WARN", "转向后已接近远目标，重新规划本路段")
+                    self._log("WARN", "转向后已接近随机目标，重新规划本路段")
                     segment -= 1
                     continue
                 move_length = min(segment_length, available_distance)
@@ -1085,8 +1084,8 @@ class HttpAutoMoveWorker(QThread):
         if not triangles or total_area <= 1e-12:
             raise ValueError("巡逻范围内缩后没有可用面积")
 
-        target = center
-        for _attempt in range(20):
+        required_distance = max(0.0, float(minimum_distance))
+        for _attempt in range(64):
             selected = rng.random() * total_area
             start, end, _limit = triangles[-1]
             for candidate_start, candidate_end, limit in triangles:
@@ -1104,42 +1103,15 @@ class HttpAutoMoveWorker(QThread):
                 + radial * along * end[1],
                 center[2],
             ]
-            if (
-                current_position is None
-                or math.hypot(
-                    target[0] - float(current_position[0]),
-                    target[1] - float(current_position[1]),
-                ) >= max(0.0, float(minimum_distance))
-            ):
-                break
-        return target
-
-    @classmethod
-    def _distant_boundary_target(
-        cls,
-        boundary: dict[str, Any],
-        margin: float,
-        *,
-        current_position: list[float] | tuple[float, ...],
-        rng: Any = random,
-        candidate_count: int = 64,
-    ) -> tuple[list[float], float]:
-        """从多组随机候选中选择距当前位置最远的围栏内目标。"""
-        count = max(8, min(256, int(candidate_count)))
-        best_target: list[float] | None = None
-        best_distance = -1.0
-        for _index in range(count):
-            target = cls._random_boundary_target(boundary, margin, rng=rng)
-            distance = math.hypot(
+            if current_position is None or math.hypot(
                 target[0] - float(current_position[0]),
                 target[1] - float(current_position[1]),
-            )
-            if distance > best_distance:
-                best_target = target
-                best_distance = distance
-        if best_target is None:
-            raise ValueError("无法生成巡逻远目标")
-        return best_target, best_distance
+            ) >= required_distance:
+                return target
+        raise ValueError(
+            "安全内缩后的巡逻区域过小，无法生成与当前位置保持最小距离的"
+            "随机目标；请扩大围栏"
+        )
 
     @classmethod
     def _validated_boundary(cls, raw: Any) -> dict[str, Any] | None:

@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlencode
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QTextCursor
 from PySide6.QtWidgets import (
     QApplication,
@@ -42,11 +42,13 @@ try:
     from .api_catalog import ENDPOINTS, ApiEndpoint
     from .http_client import MH4HttpClient
     from .http_worker import HttpAutoMoveWorker
+    from .motion_totals import MotionTotals
     from .motion import direction_axes
 except ImportError:  # 支持 python3 http_auto_move/main.py
     from api_catalog import ENDPOINTS, ApiEndpoint
     from http_client import MH4HttpClient
     from http_worker import HttpAutoMoveWorker
+    from motion_totals import MotionTotals
     from motion import direction_axes
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -90,6 +92,7 @@ class MainWindow(QMainWindow):
         self._api_payload_template: Any | None = None
         self._api_param_widgets: dict[tuple[Any, ...], QWidget] = {}
         self._api_query_widgets: dict[str, QLineEdit] = {}
+        self._motion_totals = MotionTotals()
 
         central = QWidget()
         self.setCentralWidget(central)
@@ -121,6 +124,10 @@ class MainWindow(QMainWindow):
         splitter.setSizes([570, 670])
 
         self._set_connected_ui(False)
+        self._totals_timer = QTimer(self)
+        self._totals_timer.setInterval(100)
+        self._totals_timer.timeout.connect(self._update_motion_totals_display)
+        self._totals_timer.start()
 
     # ── UI 创建 ──────────────────────────────────
 
@@ -414,7 +421,17 @@ class MainWindow(QMainWindow):
     def _build_boundary_group(self) -> QGroupBox:
         group = QGroupBox("运动范围限制（可选）")
         group.setStyleSheet(self._group_style("#80deea"))
-        form = QFormLayout(group)
+        layout = QVBoxLayout(group)
+
+        self.boundary_tabs = QTabWidget()
+        self.boundary_tabs.setStyleSheet(
+            "QTabWidget::pane { border:1px solid #455a64; background:#303238; }"
+            "QTabBar::tab { background:#3a3d42; color:#d8d8d8; padding:5px 12px; }"
+            "QTabBar::tab:selected { background:#00796b; color:#fff; }"
+        )
+
+        size_tab = QWidget()
+        size_form = QFormLayout(size_tab)
 
         dimensions = QHBoxLayout()
         self.boundary_length_spin = self._double_spin(
@@ -427,7 +444,7 @@ class MainWindow(QMainWindow):
         )
         self.boundary_width_spin.setToolTip("沿设定时机身左右方向的总宽度")
         dimensions.addWidget(self.boundary_width_spin)
-        form.addRow("范围尺寸:", dimensions)
+        size_form.addRow("范围尺寸:", dimensions)
 
         buttons = QHBoxLayout()
         self.boundary_set_button = QPushButton("以当前位置设定矩形")
@@ -436,13 +453,12 @@ class MainWindow(QMainWindow):
         )
         self.boundary_set_button.clicked.connect(self._set_boundary_from_current_pose)
         buttons.addWidget(self.boundary_set_button)
-        self.boundary_clear_button = QPushButton("取消限制")
-        self.boundary_clear_button.setStyleSheet(
-            self._button_style("#455a64", "#607d8b", compact=True)
-        )
-        self.boundary_clear_button.clicked.connect(self._clear_boundary)
-        buttons.addWidget(self.boundary_clear_button)
-        form.addRow("矩形围栏:", buttons)
+        buttons.addStretch()
+        size_form.addRow("矩形围栏:", buttons)
+        self.boundary_tabs.addTab(size_tab, "尺寸围栏")
+
+        points_tab = QWidget()
+        points_form = QFormLayout(points_tab)
 
         point_buttons = QHBoxLayout()
         self.boundary_point_add_button = QPushButton("记录当前位置")
@@ -467,12 +483,14 @@ class MainWindow(QMainWindow):
             self._clear_boundary_points
         )
         point_buttons.addWidget(self.boundary_points_clear_button)
-        form.addRow("多点围栏:", point_buttons)
+        points_form.addRow("多点围栏:", point_buttons)
 
         self.boundary_points_label = QLabel("未记录标点（至少需要 3 个）")
         self.boundary_points_label.setWordWrap(True)
         self.boundary_points_label.setStyleSheet("color:#ce93d8; font:11px monospace;")
-        form.addRow("标点状态:", self.boundary_points_label)
+        points_form.addRow("标点状态:", self.boundary_points_label)
+        self.boundary_tabs.addTab(points_tab, "标点围栏")
+        layout.addWidget(self.boundary_tabs)
 
         self.boundary_status_label = QLabel("未设置：自动动作不限制范围")
         self.boundary_status_label.setWordWrap(True)
@@ -480,15 +498,23 @@ class MainWindow(QMainWindow):
             "color:#a8b3bc; background:#25272b; border:1px solid #455a64; "
             "border-radius:4px; padding:6px; font:11px monospace;"
         )
-        form.addRow(self.boundary_status_label)
+        status_row = QHBoxLayout()
+        status_row.addWidget(self.boundary_status_label, 1)
+        self.boundary_clear_button = QPushButton("取消限制")
+        self.boundary_clear_button.setStyleSheet(
+            self._button_style("#35657b", "#607d8b", compact=True)
+        )
+        self.boundary_clear_button.clicked.connect(self._clear_boundary)
+        status_row.addWidget(self.boundary_clear_button)
+        layout.addLayout(status_row)
+
         note = QLabel(
-            "设定后仍使用上方动作、幅值、持续时间和执行组数；仅在越界时停止"
-            "当前方向并自动插入回中心指令。多点围栏会自动取所有标点的凸包，"
-            "标点顺序不限。"
+            "尺寸围栏以当前位置和朝向生成矩形；标点围栏自动取所有标点的凸包。"
+            "启用后越界会停止当前方向并自动回中心。"
         )
         note.setWordWrap(True)
         note.setStyleSheet("color:#ffcc80; font:11px;")
-        form.addRow(note)
+        layout.addWidget(note)
 
         self.boundary_length_spin.valueChanged.connect(
             self._resize_existing_boundary
@@ -519,29 +545,93 @@ class MainWindow(QMainWindow):
         return row
 
     def _build_status_group(self) -> QGroupBox:
-        group = QGroupBox("exchange 实时状态")
+        group = QGroupBox("exchange 实时状态与本次统计")
         group.setStyleSheet(self._group_style("#4fc3f7"))
-        form = QFormLayout(group)
+        layout = QVBoxLayout(group)
+
+        self.exchange_tabs = QTabWidget()
+        self.exchange_tabs.setStyleSheet(
+            "QTabWidget::pane { border:1px solid #455a64; background:#303238; }"
+            "QTabBar::tab { background:#3a3d42; color:#d8d8d8; padding:5px 12px; }"
+            "QTabBar::tab:selected { background:#1565c0; color:#fff; }"
+        )
+
+        status_tab = QWidget()
+        status_columns = QHBoxLayout(status_tab)
+        status_columns.setContentsMargins(8, 5, 8, 5)
+        left_form = QFormLayout()
+        right_form = QFormLayout()
         self.connection_label = self._status_label("未连接")
         self.rpy_label = self._status_label("—")
         self.gyro_label = self._status_label("—")
         self.accel_label = self._status_label("—")
         self.position_label = self._status_label("—")
+        self.total_distance_label = self._status_label("0.000 m")
+        self.total_time_label = self._status_label("00:00:00.0")
         self.trajectory_source_label = self._status_label("未连接")
         self.battery_label = self._status_label("—")
         self.motion_label = self._status_label("—")
         self.emergency_label = self._status_label("—")
         self.heartbeat_label = self._status_label("—")
-        form.addRow("连接:", self.connection_label)
-        form.addRow("IMU RPY:", self.rpy_label)
-        form.addRow("HTTP 陀螺仪:", self.gyro_label)
-        form.addRow("HTTP 加速度:", self.accel_label)
-        form.addRow("实际位置:", self.position_label)
-        form.addRow("轨迹源:", self.trajectory_source_label)
-        form.addRow("电池:", self.battery_label)
-        form.addRow("运动状态:", self.motion_label)
-        form.addRow("急停:", self.emergency_label)
-        form.addRow("最近心跳:", self.heartbeat_label)
+        left_form.addRow("连接:", self.connection_label)
+        left_form.addRow("IMU RPY:", self.rpy_label)
+        left_form.addRow("HTTP 陀螺仪:", self.gyro_label)
+        left_form.addRow("HTTP 加速度:", self.accel_label)
+        left_form.addRow("实际位置:", self.position_label)
+        left_form.addRow("轨迹源:", self.trajectory_source_label)
+        right_form.addRow("总里程:", self.total_distance_label)
+        right_form.addRow("总时间:", self.total_time_label)
+        right_form.addRow("电池:", self.battery_label)
+        right_form.addRow("运动状态:", self.motion_label)
+        right_form.addRow("急停:", self.emergency_label)
+        right_form.addRow("最近心跳:", self.heartbeat_label)
+        status_columns.addLayout(left_form, 3)
+        status_columns.addSpacing(12)
+        status_columns.addLayout(right_form, 2)
+        self.exchange_tabs.addTab(status_tab, "实时状态")
+
+        temperature_tab = QWidget()
+        temperature_grid = QGridLayout(temperature_tab)
+        temperature_grid.setContentsMargins(8, 5, 8, 5)
+        self.imu_temperature_label = self._status_label("—")
+        self.bms_pcb_temperature_label = self._status_label("—")
+        self.bms_afe_temperature_label = self._status_label("—")
+        temperature_grid.addWidget(QLabel("IMU:"), 0, 0)
+        temperature_grid.addWidget(self.imu_temperature_label, 0, 1)
+        temperature_grid.addWidget(QLabel("BMS PCB:"), 0, 2)
+        temperature_grid.addWidget(self.bms_pcb_temperature_label, 0, 3)
+        temperature_grid.addWidget(QLabel("BMS AFE:"), 0, 4)
+        temperature_grid.addWidget(self.bms_afe_temperature_label, 0, 5)
+
+        for column, title in enumerate(("部位", "伺服控制板", "MOS", "电机")):
+            header = QLabel(title)
+            header.setStyleSheet("color:#80deea; font:bold 12px;")
+            temperature_grid.addWidget(header, 1, column)
+
+        leg_names = (
+            ("left_front_leg", "左前腿"),
+            ("right_front_leg", "右前腿"),
+            ("left_rear_leg", "左后腿"),
+            ("right_rear_leg", "右后腿"),
+        )
+        self.joint_temperature_labels: dict[str, dict[str, QLabel]] = {}
+        for row, (key, title) in enumerate(leg_names, start=2):
+            name_label = QLabel(title)
+            name_label.setStyleSheet("color:#e0e0e0; font:12px;")
+            temperature_grid.addWidget(name_label, row, 0)
+            fields: dict[str, QLabel] = {}
+            for column, field in enumerate(
+                ("mcu_temp", "mos_temp", "motor_temp"), start=1
+            ):
+                value_label = self._status_label("—")
+                value_label.setStyleSheet("color:#ffcc80; font:12px monospace;")
+                temperature_grid.addWidget(value_label, row, column)
+                fields[field] = value_label
+            self.joint_temperature_labels[key] = fields
+        for column in range(1, 4):
+            temperature_grid.setColumnStretch(column, 1)
+        self.exchange_tabs.addTab(temperature_tab, "温度")
+        layout.addWidget(self.exchange_tabs)
         return group
 
     def _build_trajectory_group(self) -> QGroupBox:
@@ -960,6 +1050,8 @@ class MainWindow(QMainWindow):
                 )
                 if answer != QMessageBox.Yes:
                     return
+        self._motion_totals.start(time.monotonic(), self._last_position)
+        self._update_motion_totals_display()
         self._moving = True
         self._set_connected_ui(True)
         self.start_button.setEnabled(False)
@@ -1180,6 +1272,7 @@ class MainWindow(QMainWindow):
             self._set_connected_ui(True)
         else:
             self.connection_label.setText(detail)
+            self._finish_motion_totals()
             self._moving = False
             self._api_request_pending = False
             self._set_connected_ui(False)
@@ -1206,6 +1299,9 @@ class MainWindow(QMainWindow):
                 self.rpy_label.setText(str(rpy))
         self.gyro_label.setText(self._format_vector(imu.get("gyroscope"), "rad/s"))
         self.accel_label.setText(self._format_vector(imu.get("accelerometer"), "m/s²"))
+        self.imu_temperature_label.setText(
+            self._format_temperature(imu.get("temperature"))
+        )
         if self._last_position is not None:
             self.trajectory_plot.update_imu_axes(
                 *self._last_position, *self._last_http_rpy
@@ -1214,6 +1310,17 @@ class MainWindow(QMainWindow):
         battery = bms.get("battery_level", "—")
         health = bms.get("battery_health", "—")
         self.battery_label.setText(f"{battery}%（健康度 {health}%）")
+        self.bms_pcb_temperature_label.setText(
+            self._format_temperature(bms.get("pcb_board_temp"))
+        )
+        self.bms_afe_temperature_label.setText(
+            self._format_temperature(bms.get("afe_chip_temp"))
+        )
+        joints = data.get("joint") if isinstance(data.get("joint"), dict) else {}
+        for leg_key, labels in self.joint_temperature_labels.items():
+            leg = joints.get(leg_key) if isinstance(joints.get(leg_key), dict) else {}
+            for field, label in labels.items():
+                label.setText(self._format_temperature(leg.get(field)))
         self.motion_label.setText(
             f"motion={data.get('current_motion_state', '—')}  "
             f"state={data.get('current_state', '—')}/"
@@ -1240,6 +1347,9 @@ class MainWindow(QMainWindow):
             return
         x, y, z = self._last_position
         self.position_label.setText(f"x={x:.3f} y={y:.3f} z={z:.3f} m")
+        if self._moving:
+            self._motion_totals.observe_position(self._last_position)
+            self._update_motion_totals_display()
         self.trajectory_plot.add_point(x, y, z)
         self.trajectory_plot.update_imu_axes(x, y, z, *self._last_http_rpy)
 
@@ -1261,12 +1371,14 @@ class MainWindow(QMainWindow):
         self._append_log(f"[{self._time()}] [INFO] 已清除轨迹")
 
     def _on_finished(self, message: str) -> None:
+        self._finish_motion_totals()
         self._moving = False
         self.trajectory_plot.set_current_command(None)
         self._set_connected_ui(self._connected)
 
     def _on_emergency_result(self, ok: bool, message: str) -> None:
         if ok and "已触发" in message:
+            self._finish_motion_totals()
             self._moving = False
             self.trajectory_plot.set_current_command(None)
             self._set_connected_ui(self._connected)
@@ -1303,6 +1415,22 @@ class MainWindow(QMainWindow):
         self.log_edit.append(message)
         self.log_edit.moveCursor(QTextCursor.End)
 
+    def _update_motion_totals_display(self) -> None:
+        elapsed = self._motion_totals.elapsed(time.monotonic())
+        self.total_distance_label.setText(f"{self._motion_totals.distance_m:.3f} m")
+        self.total_time_label.setText(self._format_elapsed(elapsed))
+
+    def _finish_motion_totals(self) -> None:
+        if not self._motion_totals.running:
+            return
+        self._motion_totals.stop(time.monotonic())
+        self._update_motion_totals_display()
+        self._append_log(
+            f"[{self._time()}] [STATS] 总里程="
+            f"{self._motion_totals.distance_m:.3f}m，"
+            f"总时间={self._format_elapsed(self._motion_totals.elapsed_s)}"
+        )
+
     def closeEvent(self, event) -> None:  # noqa: N802 - Qt API
         self._worker.shutdown()
         if self._worker.isRunning() and not self._worker.wait(8000):
@@ -1322,6 +1450,14 @@ class MainWindow(QMainWindow):
         return time.strftime("%H:%M:%S")
 
     @staticmethod
+    def _format_elapsed(seconds: float) -> str:
+        tenths = max(0, int(float(seconds) * 10.0))
+        hours, remainder = divmod(tenths, 36000)
+        minutes, remainder = divmod(remainder, 600)
+        whole_seconds, tenth = divmod(remainder, 10)
+        return f"{hours:02d}:{minutes:02d}:{whole_seconds:02d}.{tenth}"
+
+    @staticmethod
     def _format_vector(values: Any, unit: str) -> str:
         if not isinstance(values, (list, tuple)) or len(values) < 3:
             return "—"
@@ -1332,6 +1468,28 @@ class MainWindow(QMainWindow):
             )
         except (TypeError, ValueError):
             return str(values)
+
+    @staticmethod
+    def _format_temperature(value: Any) -> str:
+        if value is None:
+            return "—"
+        values = value if isinstance(value, (list, tuple)) else (value,)
+        formatted = []
+        for item in values:
+            try:
+                number = float(item)
+            except (TypeError, ValueError):
+                formatted.append("—")
+                continue
+            if not math.isfinite(number):
+                formatted.append("—")
+            elif number.is_integer():
+                formatted.append(str(int(number)))
+            else:
+                formatted.append(f"{number:.1f}")
+        if not formatted or all(item == "—" for item in formatted):
+            return "—"
+        return " / ".join(formatted) + " °C"
 
     @staticmethod
     def _group_style(color: str) -> str:
