@@ -300,19 +300,21 @@ class WorkerSequenceTest(unittest.TestCase):
                 boundary, 0.5, rng=random.Random(1)
             )
 
-    def test_distant_patrol_target_prefers_far_candidate(self):
+    def test_random_patrol_target_respects_minimum_distance(self):
         boundary = HttpAutoMoveWorker._boundary_geometry(
             [0.0, 0.0, 0.0], length=4.0, width=2.0, yaw=0.0
         )
-        target, distance = HttpAutoMoveWorker._distant_boundary_target(
-            boundary,
-            0.15,
-            current_position=[0.0, 0.0, 0.0],
-            rng=random.Random(12),
-            candidate_count=128,
-        )
-        self.assertFalse(HttpAutoMoveWorker._boundary_outside(target, boundary))
-        self.assertGreater(distance, 1.4)
+        rng = random.Random(12)
+        for _index in range(100):
+            target = HttpAutoMoveWorker._random_boundary_target(
+                boundary,
+                0.15,
+                current_position=[0.0, 0.0, 0.0],
+                minimum_distance=0.5,
+                rng=rng,
+            )
+            self.assertFalse(HttpAutoMoveWorker._boundary_outside(target, boundary))
+            self.assertGreaterEqual(math.hypot(target[0], target[1]), 0.5)
 
     def test_execute_random_patrol_completes_requested_segment_count(self):
         worker = HttpAutoMoveWorker()
@@ -330,12 +332,13 @@ class WorkerSequenceTest(unittest.TestCase):
             {"pos": list(current), "rpy": [0.0, 0.0, 0.0]},
         )
 
-        def fake_far_target(_boundary, _margin, *, current_position, rng):
+        def fake_random_target(
+            _boundary, _margin, *, current_position, minimum_distance, rng
+        ):
             target_x = 1.8 if float(current_position[0]) <= 0.0 else -1.8
-            target = [target_x, 0.0, 0.0]
-            return target, abs(target_x - float(current_position[0]))
+            return [target_x, 0.0, 0.0]
 
-        worker._distant_boundary_target = fake_far_target
+        worker._random_boundary_target = fake_random_target
         worker._turn_to_patrol_target = (
             lambda _client, _boundary, _target, _speed, _tolerance, timeout:
             ("reached", 0.5)
@@ -383,9 +386,9 @@ class WorkerSequenceTest(unittest.TestCase):
             "ready",
             {"pos": [0.0, 0.0, 0.0], "rpy": [0.0, 0.0, 0.0]},
         )
-        worker._distant_boundary_target = (
-            lambda _boundary, _margin, *, current_position, rng:
-            ([1.8, 0.0, 0.0], 1.8)
+        worker._random_boundary_target = (
+            lambda _boundary, _margin, *, current_position, minimum_distance, rng:
+            [1.8, 0.0, 0.0]
         )
         turn_results = iter((("timeout", -8.99), ("reached", -2.0)))
         turn_calls = []

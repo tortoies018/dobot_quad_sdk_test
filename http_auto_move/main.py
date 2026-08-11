@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlencode
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QTextCursor
 from PySide6.QtWidgets import (
     QApplication,
@@ -42,11 +42,13 @@ try:
     from .api_catalog import ENDPOINTS, ApiEndpoint
     from .http_client import MH4HttpClient
     from .http_worker import HttpAutoMoveWorker
+    from .motion_totals import MotionTotals
     from .motion import direction_axes
 except ImportError:  # 支持 python3 http_auto_move/main.py
     from api_catalog import ENDPOINTS, ApiEndpoint
     from http_client import MH4HttpClient
     from http_worker import HttpAutoMoveWorker
+    from motion_totals import MotionTotals
     from motion import direction_axes
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -90,6 +92,7 @@ class MainWindow(QMainWindow):
         self._api_payload_template: Any | None = None
         self._api_param_widgets: dict[tuple[Any, ...], QWidget] = {}
         self._api_query_widgets: dict[str, QLineEdit] = {}
+        self._motion_totals = MotionTotals()
 
         central = QWidget()
         self.setCentralWidget(central)
@@ -121,6 +124,10 @@ class MainWindow(QMainWindow):
         splitter.setSizes([570, 670])
 
         self._set_connected_ui(False)
+        self._totals_timer = QTimer(self)
+        self._totals_timer.setInterval(100)
+        self._totals_timer.timeout.connect(self._update_motion_totals_display)
+        self._totals_timer.start()
 
     # ── UI 创建 ──────────────────────────────────
 
@@ -435,7 +442,7 @@ class MainWindow(QMainWindow):
         buttons.addWidget(self.boundary_set_button)
         self.boundary_clear_button = QPushButton("取消限制")
         self.boundary_clear_button.setStyleSheet(
-            self._button_style("#455a64", "#607d8b", compact=True)
+            self._button_style("#35657b", "#607d8b", compact=True)
         )
         self.boundary_clear_button.clicked.connect(self._clear_boundary)
         buttons.addWidget(self.boundary_clear_button)
@@ -516,7 +523,7 @@ class MainWindow(QMainWindow):
         return row
 
     def _build_status_group(self) -> QGroupBox:
-        group = QGroupBox("exchange 实时状态")
+        group = QGroupBox("exchange 实时状态与本次统计")
         group.setStyleSheet(self._group_style("#4fc3f7"))
         form = QFormLayout(group)
         self.connection_label = self._status_label("未连接")
@@ -524,6 +531,8 @@ class MainWindow(QMainWindow):
         self.gyro_label = self._status_label("—")
         self.accel_label = self._status_label("—")
         self.position_label = self._status_label("—")
+        self.total_distance_label = self._status_label("0.000 m")
+        self.total_time_label = self._status_label("00:00:00.0")
         self.trajectory_source_label = self._status_label("未连接")
         self.battery_label = self._status_label("—")
         self.motion_label = self._status_label("—")
@@ -534,6 +543,8 @@ class MainWindow(QMainWindow):
         form.addRow("HTTP 陀螺仪:", self.gyro_label)
         form.addRow("HTTP 加速度:", self.accel_label)
         form.addRow("实际位置:", self.position_label)
+        form.addRow("总里程:", self.total_distance_label)
+        form.addRow("总时间:", self.total_time_label)
         form.addRow("轨迹源:", self.trajectory_source_label)
         form.addRow("电池:", self.battery_label)
         form.addRow("运动状态:", self.motion_label)
@@ -957,6 +968,8 @@ class MainWindow(QMainWindow):
                 )
                 if answer != QMessageBox.Yes:
                     return
+        self._motion_totals.start(time.monotonic(), self._last_position)
+        self._update_motion_totals_display()
         self._moving = True
         self._set_connected_ui(True)
         self.start_button.setEnabled(False)
@@ -1177,6 +1190,7 @@ class MainWindow(QMainWindow):
             self._set_connected_ui(True)
         else:
             self.connection_label.setText(detail)
+            self._finish_motion_totals()
             self._moving = False
             self._api_request_pending = False
             self._set_connected_ui(False)
@@ -1237,6 +1251,9 @@ class MainWindow(QMainWindow):
             return
         x, y, z = self._last_position
         self.position_label.setText(f"x={x:.3f} y={y:.3f} z={z:.3f} m")
+        if self._moving:
+            self._motion_totals.observe_position(self._last_position)
+            self._update_motion_totals_display()
         self.trajectory_plot.add_point(x, y, z)
         self.trajectory_plot.update_imu_axes(x, y, z, *self._last_http_rpy)
 
@@ -1258,12 +1275,14 @@ class MainWindow(QMainWindow):
         self._append_log(f"[{self._time()}] [INFO] 已清除轨迹")
 
     def _on_finished(self, message: str) -> None:
+        self._finish_motion_totals()
         self._moving = False
         self.trajectory_plot.set_current_command(None)
         self._set_connected_ui(self._connected)
 
     def _on_emergency_result(self, ok: bool, message: str) -> None:
         if ok and "已触发" in message:
+            self._finish_motion_totals()
             self._moving = False
             self.trajectory_plot.set_current_command(None)
             self._set_connected_ui(self._connected)
@@ -1300,6 +1319,22 @@ class MainWindow(QMainWindow):
         self.log_edit.append(message)
         self.log_edit.moveCursor(QTextCursor.End)
 
+    def _update_motion_totals_display(self) -> None:
+        elapsed = self._motion_totals.elapsed(time.monotonic())
+        self.total_distance_label.setText(f"{self._motion_totals.distance_m:.3f} m")
+        self.total_time_label.setText(self._format_elapsed(elapsed))
+
+    def _finish_motion_totals(self) -> None:
+        if not self._motion_totals.running:
+            return
+        self._motion_totals.stop(time.monotonic())
+        self._update_motion_totals_display()
+        self._append_log(
+            f"[{self._time()}] [STATS] 总里程="
+            f"{self._motion_totals.distance_m:.3f}m，"
+            f"总时间={self._format_elapsed(self._motion_totals.elapsed_s)}"
+        )
+
     def closeEvent(self, event) -> None:  # noqa: N802 - Qt API
         self._worker.shutdown()
         if self._worker.isRunning() and not self._worker.wait(8000):
@@ -1317,6 +1352,14 @@ class MainWindow(QMainWindow):
     @staticmethod
     def _time() -> str:
         return time.strftime("%H:%M:%S")
+
+    @staticmethod
+    def _format_elapsed(seconds: float) -> str:
+        tenths = max(0, int(float(seconds) * 10.0))
+        hours, remainder = divmod(tenths, 36000)
+        minutes, remainder = divmod(remainder, 600)
+        whole_seconds, tenth = divmod(remainder, 10)
+        return f"{hours:02d}:{minutes:02d}:{whole_seconds:02d}.{tenth}"
 
     @staticmethod
     def _format_vector(values: Any, unit: str) -> str:
