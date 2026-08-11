@@ -1,0 +1,16 @@
+# Python 3.10+
+# GUI 与 3D 轨迹
+PySide6_Essentials==6.11.1
+pyqtgraph==0.14.0
+PyOpenGL==3.1.10
+numpy==1.26.4
+
+# 机器人世界坐标 gRPC 客户端
+grpcio==1.78.0
+grpcio-tools==1.78.0
+protobuf==6.31.1
+typing_extensions>=4.12
+
+# 当前仓库中的 Dobot Quad 高层 SDK。
+# 请在 http_auto_move 目录执行 pip install -r requirements.txt。
+-e ../dobot_quad_sdk/high_level/python

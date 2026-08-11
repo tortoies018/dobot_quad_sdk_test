@@ -1,0 +1,36 @@
+# Python 缓存与测试产物
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+
+# 本地虚拟环境
+.venv/
+venv/
+env/
+.packaging-venv/
+
+# PyInstaller / 打包缓存
+.packaging-build/
+build/
+dist/
+*.spec
+
+# release 中只追踪分片后的最终包、说明和校验文件，不追踪展开目录及超限 zip
+release/*/
+release/*.zip
+!release/*.zip.part-*
+!release/README.txt
+!release/SHA256SUMS.txt
+!release/SHA256SUMS.parts.txt
+
+# 编辑器与操作系统临时文件
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
