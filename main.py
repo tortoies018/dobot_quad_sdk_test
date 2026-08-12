@@ -418,7 +418,17 @@ class MainWindow(QMainWindow):
     def _build_boundary_group(self) -> QGroupBox:
         group = QGroupBox("运动范围限制（可选）")
         group.setStyleSheet(self._group_style("#80deea"))
-        form = QFormLayout(group)
+        layout = QVBoxLayout(group)
+
+        self.boundary_tabs = QTabWidget()
+        self.boundary_tabs.setStyleSheet(
+            "QTabWidget::pane { border:1px solid #55585e; background:#303238; }"
+            "QTabBar::tab { background:#3a3d42; color:#d8d8d8; padding:7px 14px; }"
+            "QTabBar::tab:selected { background:#00796b; color:#fff; }"
+        )
+
+        rectangle_tab = QWidget()
+        rectangle_form = QFormLayout(rectangle_tab)
 
         dimensions = QHBoxLayout()
         self.boundary_length_spin = self._double_spin(
@@ -431,22 +441,18 @@ class MainWindow(QMainWindow):
         )
         self.boundary_width_spin.setToolTip("沿设定时机身左右方向的总宽度")
         dimensions.addWidget(self.boundary_width_spin)
-        form.addRow("范围尺寸:", dimensions)
+        rectangle_form.addRow("范围尺寸:", dimensions)
 
-        buttons = QHBoxLayout()
         self.boundary_set_button = QPushButton("以当前位置设定矩形")
         self.boundary_set_button.setStyleSheet(
             self._button_style("#00796b", "#009688", compact=True)
         )
         self.boundary_set_button.clicked.connect(self._set_boundary_from_current_pose)
-        buttons.addWidget(self.boundary_set_button)
-        self.boundary_clear_button = QPushButton("取消限制")
-        self.boundary_clear_button.setStyleSheet(
-            self._button_style("#35657b", "#607d8b", compact=True)
-        )
-        self.boundary_clear_button.clicked.connect(self._clear_boundary)
-        buttons.addWidget(self.boundary_clear_button)
-        form.addRow("矩形围栏:", buttons)
+        rectangle_form.addRow(self.boundary_set_button)
+        self.boundary_tabs.addTab(rectangle_tab, "矩形围栏")
+
+        points_tab = QWidget()
+        points_form = QFormLayout(points_tab)
 
         point_buttons = QHBoxLayout()
         self.boundary_point_add_button = QPushButton("记录当前位置")
@@ -471,12 +477,14 @@ class MainWindow(QMainWindow):
             self._clear_boundary_points
         )
         point_buttons.addWidget(self.boundary_points_clear_button)
-        form.addRow("多点围栏:", point_buttons)
+        points_form.addRow(point_buttons)
 
         self.boundary_points_label = QLabel("未记录标点（至少需要 3 个）")
         self.boundary_points_label.setWordWrap(True)
         self.boundary_points_label.setStyleSheet("color:#ce93d8; font:11px monospace;")
-        form.addRow("标点状态:", self.boundary_points_label)
+        points_form.addRow("标点状态:", self.boundary_points_label)
+        self.boundary_tabs.addTab(points_tab, "多点围栏")
+        layout.addWidget(self.boundary_tabs)
 
         self.boundary_status_label = QLabel("未设置：自动动作不限制范围")
         self.boundary_status_label.setWordWrap(True)
@@ -484,7 +492,16 @@ class MainWindow(QMainWindow):
             "color:#a8b3bc; background:#25272b; border:1px solid #455a64; "
             "border-radius:4px; padding:6px; font:11px monospace;"
         )
-        form.addRow(self.boundary_status_label)
+        status_row = QHBoxLayout()
+        status_row.addWidget(self.boundary_status_label, 1)
+        self.boundary_clear_button = QPushButton("取消限制")
+        self.boundary_clear_button.setStyleSheet(
+            self._button_style("#35657b", "#607d8b", compact=True)
+        )
+        self.boundary_clear_button.clicked.connect(self._clear_boundary)
+        status_row.addWidget(self.boundary_clear_button)
+        layout.addLayout(status_row)
+
         note = QLabel(
             "设定后仍使用上方动作、幅值、持续时间和执行组数；仅在越界时停止"
             "当前方向并自动插入回中心指令。多点围栏会自动取所有标点的凸包，"
@@ -492,7 +509,7 @@ class MainWindow(QMainWindow):
         )
         note.setWordWrap(True)
         note.setStyleSheet("color:#ffcc80; font:11px;")
-        form.addRow(note)
+        layout.addWidget(note)
 
         self.boundary_length_spin.valueChanged.connect(
             self._resize_existing_boundary
