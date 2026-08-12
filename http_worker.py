@@ -25,7 +25,7 @@ class HttpAutoMoveWorker(QThread):
     _POSE_MAX_AGE = 1.0
     _RETURN_POSE_RECOVERY_TIMEOUT = 3.0
     _RETURN_POSE_POLL_INTERVAL = 0.05
-    _RETURN_MAX_AMPLITUDE = 16000
+    _RETURN_MAX_AMPLITUDE = 32767
     _RETURN_START_AMPLITUDE = 8000
     _RETURN_MIN_AMPLITUDE = 500
     _RETURN_SLOW_RADIUS = 0.75
@@ -503,7 +503,9 @@ class HttpAutoMoveWorker(QThread):
             boundary = self._validated_boundary(command.get("boundary"))  # 校验界面传入的围栏。
             if boundary is None:  # 随机巡逻必须依靠围栏限制活动范围。
                 raise ValueError("随机巡逻必须先设置并启用运动范围")  # 拒绝无围栏巡逻。
-            speed = max(500, min(32767, int(command.get("speed", 5000))))  # 限制摇杆幅值。
+            legacy_speed = int(command.get("speed", 5000))  # 读取旧版本共用速度供兼容历史命令。
+            move_speed = max(500, min(32767, int(command.get("move_speed", legacy_speed))))  # 限制独立前进摇杆幅值。
+            turn_speed = max(500, min(32767, int(command.get("turn_speed", legacy_speed))))  # 限制独立旋转摇杆幅值。
             move_duration = max(0.1, min(60.0, float(command.get("move_duration", 2.0))))  # 限制每段前进时间。
             repetitions = max(1, int(command.get("repetitions", 1)))  # 至少执行一个巡逻路段。
             infinite = bool(command.get("infinite", False))  # 读取是否无限循环的选项。
@@ -517,14 +519,14 @@ class HttpAutoMoveWorker(QThread):
                     return  # 不再发送后续巡逻命令。
 
             total_text = "∞" if infinite else str(repetitions)  # 生成日志中的总路段文本。
-            self._log("INFO", f"启动简化随机巡逻: 路段数={total_text}，速度={speed}，每段前进={move_duration:.1f}s；仅越界时回中心")  # 记录本次巡逻参数。
+            self._log("INFO", f"启动简化随机巡逻: 路段数={total_text}，前进速度={move_speed}，旋转速度={turn_speed}，每段前进={move_duration:.1f}s；仅越界时回中心")  # 记录独立的前进和旋转参数。
             segment = 0  # 从尚未执行任何路段开始计数。
             while self._alive.is_set() and not self._stop_motion.is_set():  # 在线且未停止时持续巡逻。
                 if not infinite and segment >= repetitions:  # 有限模式完成指定路段数后退出。
                     break  # 跳出巡逻循环并报告完成。
                 segment += 1  # 开始一个新的巡逻路段。
                 turn_left = self._random.random() < 0.5  # 随机选择左转或右转。
-                turn_x = -speed if turn_left else speed  # 按实机标定设置随机转向符号。
+                turn_x = -turn_speed if turn_left else turn_speed  # 按实机标定和独立旋转速度设置转向命令。
                 turn_duration = self._random.uniform(0.3, 1.5)  # 随机选择开环转向持续时间。
                 turn_name = "随机左转" if turn_left else "随机右转"  # 生成人可读的转向名称。
                 self._log("PATROL", f"▶ 巡逻路段 {segment}/{total_text}: {turn_name} {turn_duration:.1f}s，然后前进 {move_duration:.1f}s")  # 记录不含位置和角度残差的简化计划。
@@ -532,7 +534,7 @@ class HttpAutoMoveWorker(QThread):
                 turn_result, _center_error = self._drive_once(client, turn_name, {"move_x": 0, "move_y": 0, "turn_x": turn_x, "turn_y": 0}, turn_duration, 10.0, segment, repetitions, boundary=boundary, visualize_command=True)  # 按时间转向、监测越界并实时显示转向指令。
                 if turn_result == "outside":  # 转向漂移导致越界时立即改为回中心。
                     self._log("WARN", "巡逻转向时检测到越界；已归零，开始回中心")  # 记录触发回中心的原因。
-                    returned, center_error = self._return_to_boundary_center(client, boundary, speed)  # 使用闭环控制回到围栏中心。
+                    returned, center_error = self._return_to_boundary_center(client, boundary, move_speed, turn_speed)  # 分别使用前进和旋转幅值回到围栏中心。
                     if returned != "reached":  # 没有安全回到中心时不能继续巡逻。
                         if returned != "stopped":  # 用户主动停止不作为故障显示。
                             failure = f"随机巡逻越界回中心失败（{returned}，中心误差={center_error:.4f}m）"  # 保存回中心失败详情。
@@ -545,10 +547,10 @@ class HttpAutoMoveWorker(QThread):
                     failure = f"巡逻路段 {segment} 转向中止（{turn_result}）"  # 保存安全中止原因。
                     break  # 结束巡逻循环。
 
-                move_result, _center_error = self._drive_once(client, "向前巡逻", {"move_x": 0, "move_y": speed, "turn_x": 0, "turn_y": 0}, move_duration, 10.0, segment, repetitions, boundary=boundary, visualize_command=True)  # 按时间直行、监测越界并实时显示前进指令。
+                move_result, _center_error = self._drive_once(client, "向前巡逻", {"move_x": 0, "move_y": move_speed, "turn_x": 0, "turn_y": 0}, move_duration, 10.0, segment, repetitions, boundary=boundary, visualize_command=True)  # 使用独立前进速度直行、监测越界并显示指令。
                 if move_result == "outside":  # 前进越过围栏时立即改为回中心。
                     self._log("WARN", "巡逻前进时检测到越界；已归零，开始回中心")  # 记录触发回中心的原因。
-                    returned, center_error = self._return_to_boundary_center(client, boundary, speed)  # 使用闭环控制回到围栏中心。
+                    returned, center_error = self._return_to_boundary_center(client, boundary, move_speed, turn_speed)  # 分别使用前进和旋转幅值回到围栏中心。
                     if returned != "reached":  # 没有安全回到中心时不能继续巡逻。
                         if returned != "stopped":  # 用户主动停止不作为故障显示。
                             failure = f"随机巡逻越界回中心失败（{returned}，中心误差={center_error:.4f}m）"  # 保存回中心失败详情。
@@ -930,16 +932,20 @@ class HttpAutoMoveWorker(QThread):
         client: MH4HttpClient,
         boundary: dict[str, Any],
         amplitude: int,
+        turn_amplitude: int | None = None,
     ) -> tuple[str, float]:
         """让机器狗朝向围栏中心并前进，直到回到中心附近。"""  # 回中心是唯一使用位置和航向闭环的巡逻阶段。
         tolerance = max(0.05, min(0.15, min(boundary["length"], boundary["width"]) * 0.08))  # 按围栏尺寸设置到达容差。
         timeout = max(8.0, max(boundary["length"], boundary["width"]) * 12.0)  # 按围栏跨度设置最长回中心时间。
-        recovery_amplitude = max(self._RETURN_START_AMPLITUDE, min(self._RETURN_MAX_AMPLITUDE, int(amplitude)))  # 使用能越过实机起步死区的回中心幅值。
+        recovery_amplitude = max(self._RETURN_START_AMPLITUDE, min(self._RETURN_MAX_AMPLITUDE, int(amplitude)))  # 使用能越过实机起步死区的回中心直行幅值。
+        requested_turn = amplitude if turn_amplitude is None else turn_amplitude  # 未单独配置时兼容旧版共用速度。
+        recovery_turn_amplitude = max(self._RETURN_START_AMPLITUDE, min(self._RETURN_MAX_AMPLITUDE, int(requested_turn)))  # 独立限制回中心旋转幅值。
         center = boundary["center"]  # 读取围栏中心世界坐标。
-        self._log("BOUNDARY", f"开始回中心: 目标=({center[0]:.3f},{center[1]:.3f})m，最大摇杆={recovery_amplitude}，容差={tolerance:.3f}m，超时={timeout:.1f}s")  # 明确报告已进入回中心阶段。
+        self._log("BOUNDARY", f"开始回中心: 目标=({center[0]:.3f},{center[1]:.3f})m，前进摇杆={recovery_amplitude}，旋转摇杆={recovery_turn_amplitude}，容差={tolerance:.3f}m，超时={timeout:.1f}s")  # 明确报告独立的回中心速度。
         try:  # 确保回中心结束后清除界面指令标记。
             result, error = self._drive_to_boundary_center(
-                client, boundary, recovery_amplitude, tolerance, timeout
+                client, boundary, recovery_amplitude, tolerance, timeout,
+                turn_amplitude=recovery_turn_amplitude,
             )  # 执行转向加前进的闭环回中心。
             relaxed_tolerance = min(0.20, max(tolerance + 0.03, tolerance * 1.25))  # 为定位小幅抖动保留缓冲区。
             if result == "timeout" and error <= relaxed_tolerance:  # 超时但已经很靠近中心时视为完成。
@@ -961,6 +967,8 @@ class HttpAutoMoveWorker(QThread):
         amplitude: int,
         tolerance: float,
         timeout: float,
+        *,
+        turn_amplitude: int | None = None,
     ) -> tuple[str, float]:
         return self._drive_to_world_target(
             client,
@@ -969,6 +977,7 @@ class HttpAutoMoveWorker(QThread):
             tolerance,
             timeout,
             motion_label="回中心",
+            turn_amplitude=turn_amplitude,
         )
 
     def _drive_to_world_target(
@@ -981,6 +990,7 @@ class HttpAutoMoveWorker(QThread):
         *,
         motion_label: str,
         boundary: dict[str, Any] | None = None,
+        turn_amplitude: int | None = None,
     ) -> tuple[str, float]:
         started = time.monotonic()
         next_progress_log = started  # 允许第一条回中心命令立即打印日志。
@@ -1036,7 +1046,7 @@ class HttpAutoMoveWorker(QThread):
                 self._safe_stop(client)
                 return "timeout", last_error
             yaw = float(rpy[2])
-            axes = self._axes_to_world_target(position, target, yaw, amplitude, tolerance)  # 计算“先转向中心、再向前”的摇杆命令。
+            axes = self._axes_to_world_target(position, target, yaw, amplitude, tolerance, turn_amplitude=turn_amplitude)  # 使用独立旋转幅值计算回中心摇杆命令。
             target_yaw = math.atan2(dy, dx)  # 计算当前点指向中心的目标航向。
             yaw_error = self._normalise_radians(target_yaw - yaw)  # 计算正负一百八十度内的航向误差。
             turning_only = axes["move_y"] == 0 and axes["turn_x"] != 0  # 判断本周期是否处于原地转向阶段。
@@ -1124,6 +1134,8 @@ class HttpAutoMoveWorker(QThread):
         yaw: float,
         amplitude: int,
         tolerance: float,
+        *,
+        turn_amplitude: int | None = None,
     ) -> dict[str, int]:
         """生成只含转向和前进的回中心摇杆命令。"""  # 避免依赖机器狗可能不稳定的横移或斜移能力。
         dx = float(target[0]) - float(position[0])  # 计算中心相对当前位置的世界 X 偏差。
@@ -1135,7 +1147,8 @@ class HttpAutoMoveWorker(QThread):
         speed_scale = min(1.0, distance / slow_radius)  # 根据中心距离逐渐降低输出。
         minimum = min(int(amplitude), HttpAutoMoveWorker._RETURN_MIN_AMPLITUDE)  # 保证低速命令仍足以克服起步死区。
         forward_output = max(minimum, int(int(amplitude) * speed_scale))  # 计算本周期向前幅值。
-        turn_limit = max(minimum, int(amplitude))  # 使用完整回中心幅值，确保越过实机转向死区。
+        requested_turn = amplitude if turn_amplitude is None else turn_amplitude  # 未单独指定时保持旧版共用幅值行为。
+        turn_limit = max(HttpAutoMoveWorker._RETURN_MIN_AMPLITUDE, int(requested_turn))  # 使用独立完整旋转幅值越过实机转向死区。
         turn_scale = min(1.0, abs(yaw_error) / math.radians(45.0))  # 航向误差越大，转向命令越强。
         turn_output = max(minimum, int(turn_limit * turn_scale))  # 计算能越过起转死区的转向幅值。
         turn_x = -turn_output if yaw_error > 0.0 else turn_output  # 按实机标定选择左转或右转符号。

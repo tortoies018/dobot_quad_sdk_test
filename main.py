@@ -354,15 +354,20 @@ class MainWindow(QMainWindow):
         form = QFormLayout(tab)  # 使用表单布局排列说明和参数。
         intro = "必须先设置矩形或多点围栏。每段随机左转或右转一小段时间，然后按设定时间向前；普通巡逻不判断目标位置或航向，只有越界时才回中心。"  # 生成简化逻辑说明。
         form.addRow(self._intro(intro))  # 把简化逻辑说明显示在页签顶部。
-        speed = self._stick_spin()  # 创建巡逻摇杆幅值输入框。
-        speed.setValue(5000)  # 设置适合首次低速测试的默认幅值。
-        speed.setSuffix(" 摇杆")  # 标明该数值直接对应摇杆幅值。
-        speed.setToolTip("随机转向和向前移动使用的 HTTP 摇杆幅值")  # 解释速度参数用途。
-        form.addRow("巡逻速度:", speed)  # 把速度输入框加入表单。
+        move_speed = self._stick_spin()  # 创建向前巡逻摇杆幅值输入框。
+        move_speed.setValue(5000)  # 设置适合首次低速测试的默认前进幅值。
+        move_speed.setSuffix(" 摇杆")  # 标明该数值直接对应摇杆幅值。
+        move_speed.setToolTip("向前巡逻和回中心直行使用的 HTTP 摇杆幅值")  # 解释前进速度参数用途。
+        form.addRow("前进速度:", move_speed)  # 把前进速度输入框加入表单。
+        turn_speed = self._stick_spin()  # 创建独立的旋转摇杆幅值输入框。
+        turn_speed.setValue(16000)  # 默认使用更容易越过实机转向死区的旋转幅值。
+        turn_speed.setSuffix(" 摇杆")  # 标明该数值直接对应右摇杆 X 幅值。
+        turn_speed.setToolTip("随机左右转和越界回中心转向使用的 HTTP 摇杆幅值")  # 解释旋转速度不会改变直行速度。
+        form.addRow("旋转速度:", turn_speed)  # 把旋转速度输入框加入表单。
         move_duration = self._double_spin(0.1, 60.0, 2.0, " s", 1, 0.1)  # 创建每段前进时间输入框。
         move_duration.setToolTip("每次随机转向后，保持向前摇杆的时间")  # 解释时间参数不代表定位距离。
         form.addRow("每段前进时间:", move_duration)  # 把前进时间输入框加入表单。
-        self._action_configs.append({"kind": "random_patrol", "title": "范围内简化随机巡逻", "speed": speed, "move_duration": move_duration})  # 保存构建命令所需控件。
+        self._action_configs.append({"kind": "random_patrol", "title": "范围内简化随机巡逻", "move_speed": move_speed, "turn_speed": turn_speed, "move_duration": move_duration})  # 保存前进、旋转和时间控件。
         self.tabs.addTab(tab, "随机巡逻")  # 把配置页加入自动动作选项卡。
 
     def _build_common_group(self) -> QGroupBox:
@@ -1062,7 +1067,8 @@ class MainWindow(QMainWindow):
                 **common,
                 "mode": "random_patrol",
                 "name": config["title"],
-                "speed": config["speed"].value(),
+                "move_speed": config["move_speed"].value(),  # 单独传递直行摇杆幅值。
+                "turn_speed": config["turn_speed"].value(),  # 单独传递随机转向和回中心转向幅值。
                 "move_duration": config["move_duration"].value(),  # 只传递开环前进时间，不再传距离和偏航死区。
             }
         amplitude = config["amplitude"].value()
