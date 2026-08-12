@@ -1,12 +1,17 @@
+# 说明 API 目录及默认请求示例的数据来源。
 """《MH4 HTTP接口定义》中的接口目录和常用请求示例。"""
 
+# 导入本模块所需的库、类型和外部组件。
 from __future__ import annotations
 
+# 导入本模块所需的库、类型和外部组件。
 from dataclasses import dataclass
 from typing import Any
 
 
+# 声明下方方法的调用方式或属性行为。
 @dataclass(frozen=True)
+# 描述一个可由界面调用的 HTTP API 端点。
 class ApiEndpoint:
     category: str
     name: str
@@ -16,6 +21,7 @@ class ApiEndpoint:
     payload: Any | None
     dangerous: bool = False
 
+    # 封装 label 对应的独立处理逻辑。
     @property
     def label(self) -> str:
         warning = " ⚠" if self.dangerous else ""
@@ -123,6 +129,7 @@ _SPECS = (
 )
 
 
+# 定义本模块后续逻辑使用的常量或默认配置。
 _LEGS = (
     "left_front_leg",
     "right_front_leg",
@@ -131,14 +138,17 @@ _LEGS = (
 )
 
 
+# 构造指定关节字段的取值范围说明。
 def _joint_limits(field: str, limits: list[list[float]]) -> dict[str, Any]:
     return {field: {leg: copy_limits(limits) for leg in _LEGS}}
 
 
+# 复制关节限位列表以避免共享可变数据。
 def copy_limits(limits: list[list[float]]) -> list[list[float]]:
     return [list(pair) for pair in limits]
 
 
+# 执行本逻辑段的数据处理、状态同步或界面更新。
 _PAYLOADS: dict[str, Any] = {
     "/connection/state": {
         "currentClient": 1,
@@ -267,6 +277,7 @@ _PAYLOADS: dict[str, Any] = {
 }
 
 
+# 定义本模块后续逻辑使用的常量或默认配置。
 _NO_BODY_POSTS = {
     "/settings/clearAlarms",
     "/settings/streaming/start",
@@ -282,6 +293,7 @@ _NO_BODY_POSTS = {
 }
 
 
+# 定义本模块后续逻辑使用的常量或默认配置。
 _DANGEROUS_PATHS = {
     "/connection/type",
     "/settings/posLimit",
@@ -314,18 +326,22 @@ _DANGEROUS_PATHS = {
 }
 
 
+# 为指定 API 方法和路径生成默认请求载荷。
 def _payload(method: str, path: str) -> Any | None:
+    # 根据当前状态或输入选择对应的处理路径。
     if method != "POST" or path in _NO_BODY_POSTS:
         return None
     value = _PAYLOADS.get(path, {})
     # 目录对象永不被界面直接修改，不过复制一层可以避免可变默认值意外共享。
     if isinstance(value, dict):
         return dict(value)
+    # 根据当前状态或输入选择对应的处理路径。
     if isinstance(value, list):
         return list(value)
     return value
 
 
+# 定义本模块后续逻辑使用的常量或默认配置。
 ENDPOINTS = tuple(
     ApiEndpoint(
         category=category,
