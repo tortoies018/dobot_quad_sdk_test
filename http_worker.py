@@ -521,7 +521,7 @@ class HttpAutoMoveWorker(QThread):
                     return  # 不再发送后续巡逻命令。
 
             total_text = "∞" if infinite else str(repetitions)  # 生成日志中的总路段文本。
-            self._log("INFO", f"启动简化随机巡逻: 路段数={total_text}，前进速度={move_speed}，旋转速度={turn_speed}，每段前进={move_duration:.1f}s，边界安全距离={safety_margin:.2f}m；越过内部安全线时回中心")  # 记录速度、时间和安全距离。
+            self._log("INFO", f"启动简化随机巡逻: 路段数={total_text}，前进速度={move_speed}，旋转速度={turn_speed}，每段前进={move_duration:.1f}s，随机点安全距离={safety_margin:.2f}m；仅越过蓝色外部围栏时回中心")  # 说明安全距离只约束随机点，出界仍以外部围栏为准。
             segment = 0  # 从尚未执行任何路段开始计数。
             while self._alive.is_set() and not self._stop_motion.is_set():  # 在线且未停止时持续巡逻。
                 if not infinite and segment >= repetitions:  # 有限模式完成指定路段数后退出。
@@ -542,7 +542,7 @@ class HttpAutoMoveWorker(QThread):
                 turn_name = "随机左转" if turn_left else "随机右转"  # 生成人可读的转向名称。
                 self._log("PATROL", f"▶ 巡逻路段 {segment}/{total_text}: 安全随机点=({random_target[0]:.3f},{random_target[1]:.3f})m，{turn_name} {turn_duration:.1f}s，然后前进 {move_duration:.1f}s")  # 记录位于安全区内的随机点和开环动作。
 
-                turn_result, _center_error = self._drive_once(client, turn_name, {"move_x": 0, "move_y": 0, "turn_x": turn_x, "turn_y": 0}, turn_duration, 10.0, segment, repetitions, boundary=patrol_boundary, visualize_command=True, visualization_target=random_target)  # 朝随机点开环转向并监测内部安全线。
+                turn_result, _center_error = self._drive_once(client, turn_name, {"move_x": 0, "move_y": 0, "turn_x": turn_x, "turn_y": 0}, turn_duration, 10.0, segment, repetitions, boundary=boundary, visualize_command=True, visualization_target=random_target)  # 朝安全随机点开环转向，出界只检查蓝色外部围栏。
                 if turn_result == "outside":  # 转向漂移导致越界时立即改为回中心。
                     self._log("WARN", "巡逻转向时检测到越界；已归零，开始回中心")  # 记录触发回中心的原因。
                     returned, center_error = self._return_to_boundary_center(client, boundary, move_speed, turn_speed)  # 分别使用前进和旋转幅值回到围栏中心。
@@ -558,7 +558,7 @@ class HttpAutoMoveWorker(QThread):
                     failure = f"巡逻路段 {segment} 转向中止（{turn_result}）"  # 保存安全中止原因。
                     break  # 结束巡逻循环。
 
-                move_result, _center_error = self._drive_once(client, "向前巡逻", {"move_x": 0, "move_y": move_speed, "turn_x": 0, "turn_y": 0}, move_duration, 10.0, segment, repetitions, boundary=patrol_boundary, visualize_command=True, visualization_target=random_target)  # 向安全随机点方向开环前进并监测内部安全线。
+                move_result, _center_error = self._drive_once(client, "向前巡逻", {"move_x": 0, "move_y": move_speed, "turn_x": 0, "turn_y": 0}, move_duration, 10.0, segment, repetitions, boundary=boundary, visualize_command=True, visualization_target=random_target)  # 向安全随机点方向开环前进，出界只检查蓝色外部围栏。
                 if move_result == "outside":  # 前进越过围栏时立即改为回中心。
                     self._log("WARN", "巡逻前进时检测到越界；已归零，开始回中心")  # 记录触发回中心的原因。
                     returned, center_error = self._return_to_boundary_center(client, boundary, move_speed, turn_speed)  # 分别使用前进和旋转幅值回到围栏中心。
@@ -803,7 +803,7 @@ class HttpAutoMoveWorker(QThread):
         boundary: dict[str, Any],
         margin: float,
     ) -> dict[str, Any]:
-        """生成与原围栏各边至少保持指定距离的内部安全围栏。"""  # 随机点和提前回中心检测共用该范围。
+        """生成与原围栏各边至少保持指定距离的内部安全围栏。"""  # 该范围仅约束随机点生成和橙色可视化。
         margin = max(0.0, float(margin))  # 把安全距离规范为非负浮点数。
         center = [float(value) for value in boundary["center"][:3]]  # 复制围栏中心坐标。
         if boundary.get("kind") != "polygon":  # 矩形可以精确地从四边各缩进指定距离。

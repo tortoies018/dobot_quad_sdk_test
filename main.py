@@ -85,6 +85,7 @@ class MainWindow(QMainWindow):
         self._last_position: list[float] | None = None
         self._last_position_at = 0.0
         self._boundary_region: dict[str, Any] | None = None
+        self._patrol_safe_region: dict[str, Any] | None = None
         self._boundary_points: list[list[float]] = []
         self._action_configs: list[dict[str, Any]] = []
         self._api_request_pending = False
@@ -352,7 +353,7 @@ class MainWindow(QMainWindow):
         """创建只按时间运动、只在越界时回中心的随机巡逻页签。"""  # 说明本页签不再设置位置或角度容差。
         tab = QWidget()  # 创建随机巡逻页签容器。
         form = QFormLayout(tab)  # 使用表单布局排列说明和参数。
-        intro = "必须先设置矩形或多点围栏。程序在可调安全距离内生成随机点，每段朝该点开环转向后按设定时间前进；不做必须到点或角度残差判定，越过内部安全线就回中心。"  # 说明安全随机点和简化控制逻辑。
+        intro = "必须先设置矩形或多点围栏。程序在可调安全距离内生成随机点，每段朝该点开环转向后按设定时间前进；橙线只限制生成点，实际出界和回中心始终以蓝色外部围栏为准。"  # 明确随机点安全线与实际出界线的不同用途。
         form.addRow(self._intro(intro))  # 把简化逻辑说明显示在页签顶部。
         move_speed = self._stick_spin()  # 创建向前巡逻摇杆幅值输入框。
         move_speed.setValue(5000)  # 设置适合首次低速测试的默认前进幅值。
@@ -368,7 +369,7 @@ class MainWindow(QMainWindow):
         move_duration.setToolTip("每次随机转向后，保持向前摇杆的时间")  # 解释时间参数不代表定位距离。
         form.addRow("每段前进时间:", move_duration)  # 把前进时间输入框加入表单。
         safety_margin = self._double_spin(0.05, 10.0, 0.30, " m", 2, 0.05)  # 创建边界安全距离输入框。
-        safety_margin.setToolTip("随机点与外部围栏至少保持此距离；机器狗越过内部安全线时提前回中心")  # 解释该参数同时约束目标点和实际运动。
+        safety_margin.setToolTip("随机点与蓝色外部围栏至少保持此距离；橙色安全线不参与实际出界判定")  # 解释该参数只约束目标点生成。
         form.addRow("边界安全距离:", safety_margin)  # 把安全距离输入框加入表单。
         self._action_configs.append({"kind": "random_patrol", "title": "范围内简化随机巡逻", "move_speed": move_speed, "turn_speed": turn_speed, "move_duration": move_duration, "safety_margin": safety_margin})  # 保存前进、旋转、时间和安全距离控件。
         self.tabs.addTab(tab, "随机巡逻")  # 把配置页加入自动动作选项卡。
@@ -1050,7 +1051,11 @@ class MainWindow(QMainWindow):
         self.stop_button.setEnabled(True)
         self.trajectory_plot.mark_start()
         if command.get("mode") == "random_patrol":  # 随机巡逻开始时显示内部安全线。
-            self.trajectory_plot.set_patrol_safe_region(command["safe_boundary"])  # 显示构建命令时已经验证的内部安全线。
+            self._patrol_safe_region = copy.deepcopy(command["safe_boundary"])  # 持久保存安全线，确保停止后和二次启动仍可恢复。
+            self.trajectory_plot.set_patrol_safe_region(self._patrol_safe_region)  # 显示构建命令时已经验证的内部安全线。
+        else:  # 非巡逻动作不使用随机点安全距离。
+            self._patrol_safe_region = None  # 清除旧巡逻留下的安全线状态。
+            self.trajectory_plot.set_patrol_safe_region(None)  # 从 3D 视图移除橙色安全线。
         self._worker.start_move(command)
 
     def _build_command(self) -> dict[str, Any]:
@@ -1078,7 +1083,7 @@ class MainWindow(QMainWindow):
                 "move_speed": config["move_speed"].value(),  # 单独传递直行摇杆幅值。
                 "turn_speed": config["turn_speed"].value(),  # 单独传递随机转向和回中心转向幅值。
                 "move_duration": config["move_duration"].value(),  # 只传递开环前进时间，不再传距离和偏航死区。
-                "safety_margin": safety_margin,  # 传递随机点和提前回中心共用的边界安全距离。
+                "safety_margin": safety_margin,  # 传递仅用于随机点生成的边界安全距离。
                 "safe_boundary": safe_boundary,  # 供主线程立即绘制经过验证的内部安全线。
             }
         amplitude = config["amplitude"].value()
@@ -1119,6 +1124,8 @@ class MainWindow(QMainWindow):
             self.boundary_width_spin.value(),
             yaw,
         )
+        self._patrol_safe_region = None  # 外部围栏改变后旧安全线立即失效。
+        self.trajectory_plot.set_patrol_safe_region(None)  # 清除旧围栏对应的橙色安全线。
         self._show_boundary()
         self._append_log(
             f"[{self._time()}] [BOUNDARY] 已设定运动范围: "
@@ -1143,6 +1150,8 @@ class MainWindow(QMainWindow):
             self.boundary_width_spin.value(),
             float(region["yaw"]),
         )
+        self._patrol_safe_region = None  # 围栏尺寸改变后等待下次巡逻重新计算安全线。
+        self.trajectory_plot.set_patrol_safe_region(None)  # 清除旧尺寸对应的橙色安全线。
         self._show_boundary()
 
     def _show_boundary(self) -> None:
@@ -1171,6 +1180,7 @@ class MainWindow(QMainWindow):
 
     def _clear_boundary(self, _checked: bool = False, *, silent: bool = False) -> None:
         self._boundary_region = None
+        self._patrol_safe_region = None
         self.trajectory_plot.set_boundary_region(None)
         self.trajectory_plot.set_patrol_safe_region(None)
         self.trajectory_plot.set_current_command(None)
@@ -1225,6 +1235,8 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "无法生成多点范围", str(exc))
             return
         self._boundary_region = region
+        self._patrol_safe_region = None  # 多点围栏改变后旧安全线不再有效。
+        self.trajectory_plot.set_patrol_safe_region(None)  # 清除旧多点围栏对应的橙色安全线。
         self._show_boundary()
         self._append_log(
             f"[{self._time()}] [BOUNDARY] 已从 {len(self._boundary_points)} 个标点"
@@ -1367,6 +1379,8 @@ class MainWindow(QMainWindow):
         self.trajectory_plot.clear()
         if self._boundary_region is not None:
             self._show_boundary()
+        if self._patrol_safe_region is not None:  # 清除轨迹后恢复当前巡逻安全线。
+            self.trajectory_plot.set_patrol_safe_region(self._patrol_safe_region)  # 重新绘制橙色内部安全线。
         self._show_boundary_points()
         self._append_log(f"[{self._time()}] [INFO] 已清除轨迹")
 
@@ -1374,7 +1388,8 @@ class MainWindow(QMainWindow):
         self._finish_motion_totals()
         self._moving = False
         self.trajectory_plot.set_current_command(None)
-        self.trajectory_plot.set_patrol_safe_region(None)
+        if self._patrol_safe_region is not None:  # 巡逻停止后仍保留安全线供检查和二次启动。
+            self.trajectory_plot.set_patrol_safe_region(self._patrol_safe_region)  # 防止动作结束清理误删安全线。
         self._set_connected_ui(self._connected)
 
     def _on_emergency_result(self, ok: bool, message: str) -> None:
@@ -1382,7 +1397,8 @@ class MainWindow(QMainWindow):
             self._finish_motion_totals()
             self._moving = False
             self.trajectory_plot.set_current_command(None)
-            self.trajectory_plot.set_patrol_safe_region(None)
+            if self._patrol_safe_region is not None:  # 急停只清除运动指令，不删除安全线配置。
+                self.trajectory_plot.set_patrol_safe_region(self._patrol_safe_region)  # 保留橙色内部安全线。
             self._set_connected_ui(self._connected)
 
     def _set_connected_ui(self, connected: bool) -> None:

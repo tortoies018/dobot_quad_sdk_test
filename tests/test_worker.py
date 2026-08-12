@@ -374,6 +374,12 @@ class WorkerSequenceTest(unittest.TestCase):
         self.assertTrue(all(phase[2] == 1.2 for phase in phases[1::2]))
         self.assertTrue(all(phase[7] for phase in phases))
         self.assertTrue(all(phase[8] is not None for phase in phases))
+        self.assertTrue(all(phase[6]["length"] == 4.0 for phase in phases))
+        safe = worker._inset_boundary(boundary, 0.30)
+        self.assertTrue(all(
+            not worker._boundary_outside(phase[8], safe)
+            for phase in phases
+        ))
         self.assertEqual(finished[-1], "随机巡逻完成")
 
     def test_random_patrol_returns_to_center_when_turn_starts_outside(self):
