@@ -542,7 +542,15 @@ class MainWindow(QMainWindow):
     def _build_status_group(self) -> QGroupBox:
         group = QGroupBox("exchange 实时状态与本次统计")
         group.setStyleSheet(self._group_style("#4fc3f7"))
-        form = QFormLayout(group)
+        layout = QVBoxLayout(group)
+
+        self.status_tabs = QTabWidget()
+        self.status_tabs.setStyleSheet(
+            "QTabWidget::pane { border:1px solid #55585e; background:#303238; }"
+            "QTabBar::tab { background:#3a3d42; color:#d8d8d8; padding:7px 14px; }"
+            "QTabBar::tab:selected { background:#1565c0; color:#fff; }"
+        )
+
         self.connection_label = self._status_label("未连接")
         self.rpy_label = self._status_label("—")
         self.gyro_label = self._status_label("—")
@@ -555,18 +563,71 @@ class MainWindow(QMainWindow):
         self.motion_label = self._status_label("—")
         self.emergency_label = self._status_label("—")
         self.heartbeat_label = self._status_label("—")
-        form.addRow("连接:", self.connection_label)
-        form.addRow("IMU RPY:", self.rpy_label)
-        form.addRow("HTTP 陀螺仪:", self.gyro_label)
-        form.addRow("HTTP 加速度:", self.accel_label)
-        form.addRow("实际位置:", self.position_label)
-        form.addRow("总里程:", self.total_distance_label)
-        form.addRow("总时间:", self.total_time_label)
-        form.addRow("轨迹源:", self.trajectory_source_label)
-        form.addRow("电池:", self.battery_label)
-        form.addRow("运动状态:", self.motion_label)
-        form.addRow("急停:", self.emergency_label)
-        form.addRow("最近心跳:", self.heartbeat_label)
+
+        status_tab = QWidget()
+        status_columns = QHBoxLayout(status_tab)
+        status_left = QFormLayout()
+        status_left.addRow("连接:", self.connection_label)
+        status_left.addRow("IMU RPY:", self.rpy_label)
+        status_left.addRow("HTTP 陀螺仪:", self.gyro_label)
+        status_left.addRow("HTTP 加速度:", self.accel_label)
+        status_left.addRow("实际位置:", self.position_label)
+        status_left.addRow("轨迹源:", self.trajectory_source_label)
+        status_columns.addLayout(status_left, 1)
+        status_columns.addSpacing(18)
+
+        status_right = QFormLayout()
+        status_right.addRow("总里程:", self.total_distance_label)
+        status_right.addRow("总时间:", self.total_time_label)
+        status_right.addRow("电池:", self.battery_label)
+        status_right.addRow("运动状态:", self.motion_label)
+        status_right.addRow("急停:", self.emergency_label)
+        status_right.addRow("最近心跳:", self.heartbeat_label)
+        status_columns.addLayout(status_right, 1)
+        self.status_tabs.addTab(status_tab, "实时状态")
+
+        temperature_tab = QWidget()
+        temperature_grid = QGridLayout(temperature_tab)
+        self.imu_temperature_label = self._status_label("—")
+        self.bms_pcb_temperature_label = self._status_label("—")
+        self.bms_afe_temperature_label = self._status_label("—")
+        temperature_summary = QHBoxLayout()
+        temperature_summary.addWidget(QLabel("IMU:"))
+        temperature_summary.addWidget(self.imu_temperature_label)
+        temperature_summary.addStretch()
+        temperature_summary.addWidget(QLabel("BMS PCB:"))
+        temperature_summary.addWidget(self.bms_pcb_temperature_label)
+        temperature_summary.addStretch()
+        temperature_summary.addWidget(QLabel("BMS AFE:"))
+        temperature_summary.addWidget(self.bms_afe_temperature_label)
+        temperature_grid.addLayout(temperature_summary, 0, 0, 1, 4)
+
+        for column, title in enumerate(("腿部", "伺服控制板", "MOS 管", "电机")):
+            heading = QLabel(title)
+            heading.setStyleSheet("color:#80deea; font:bold 12px;")
+            temperature_grid.addWidget(heading, 1, column)
+
+        self.joint_temperature_labels: dict[str, dict[str, QLabel]] = {}
+        leg_names = (
+            ("left_front_leg", "左前腿"),
+            ("right_front_leg", "右前腿"),
+            ("left_rear_leg", "左后腿"),
+            ("right_rear_leg", "右后腿"),
+        )
+        temperature_fields = ("mcu_temp", "mos_temp", "motor_temp")
+        for row, (leg_key, leg_title) in enumerate(leg_names, start=2):
+            temperature_grid.addWidget(QLabel(f"{leg_title}:"), row, 0)
+            field_labels: dict[str, QLabel] = {}
+            for column, field in enumerate(temperature_fields, start=1):
+                field_label = self._status_label("—")
+                field_labels[field] = field_label
+                temperature_grid.addWidget(field_label, row, column)
+            self.joint_temperature_labels[leg_key] = field_labels
+        for column in range(1, 4):
+            temperature_grid.setColumnStretch(column, 1)
+        self.status_tabs.addTab(temperature_tab, "温度")
+
+        layout.addWidget(self.status_tabs)
         return group
 
     def _build_trajectory_group(self) -> QGroupBox:
@@ -1242,6 +1303,20 @@ class MainWindow(QMainWindow):
         battery = bms.get("battery_level", "—")
         health = bms.get("battery_health", "—")
         self.battery_label.setText(f"{battery}%（健康度 {health}%）")
+        self.imu_temperature_label.setText(
+            self._format_temperature(imu.get("temperature"))
+        )
+        self.bms_pcb_temperature_label.setText(
+            self._format_temperature(bms.get("pcb_board_temp"))
+        )
+        self.bms_afe_temperature_label.setText(
+            self._format_temperature(bms.get("afe_chip_temp"))
+        )
+        joints = data.get("joint") if isinstance(data.get("joint"), dict) else {}
+        for leg_key, field_labels in self.joint_temperature_labels.items():
+            leg = joints.get(leg_key) if isinstance(joints.get(leg_key), dict) else {}
+            for field, label in field_labels.items():
+                label.setText(self._format_temperature(leg.get(field)))
         self.motion_label.setText(
             f"motion={data.get('current_motion_state', '—')}  "
             f"state={data.get('current_state', '—')}/"
@@ -1389,6 +1464,20 @@ class MainWindow(QMainWindow):
             )
         except (TypeError, ValueError):
             return str(values)
+
+    @staticmethod
+    def _format_temperature(value: Any) -> str:
+        if value is None:
+            return "—"
+        values = value if isinstance(value, (list, tuple)) else (value,)
+        try:
+            numbers = [float(item) for item in values]
+            if not numbers or not all(math.isfinite(item) for item in numbers):
+                return "—"
+        except (TypeError, ValueError):
+            return str(value)
+        formatted = " / ".join(f"{item:g}" for item in numbers)
+        return f"{formatted} °C"
 
     @staticmethod
     def _group_style(color: str) -> str:
