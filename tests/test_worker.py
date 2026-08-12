@@ -1,5 +1,4 @@
 import math
-import random
 import time
 import unittest
 
@@ -261,61 +260,6 @@ class WorkerSequenceTest(unittest.TestCase):
                 [2.0, 2.0, 0.0],
             ])
 
-    def test_random_patrol_targets_stay_inside_inset_rotated_rectangle(self):
-        boundary = HttpAutoMoveWorker._boundary_geometry(
-            [3.0, -2.0, 0.3], length=4.0, width=2.0, yaw=math.pi / 3.0
-        )
-        rng = random.Random(1234)
-        for _index in range(100):
-            target = HttpAutoMoveWorker._random_boundary_target(
-                boundary, 0.2, rng=rng
-            )
-            self.assertFalse(HttpAutoMoveWorker._boundary_outside(target, boundary))
-            forward, left = HttpAutoMoveWorker._boundary_local_position(
-                target, boundary
-            )
-            self.assertLessEqual(abs(forward), 1.8 + 1e-9)
-            self.assertLessEqual(abs(left), 0.8 + 1e-9)
-
-    def test_random_patrol_targets_stay_inside_polygon(self):
-        boundary = HttpAutoMoveWorker._polygon_boundary_geometry([
-            [0.0, 0.0, 0.2],
-            [3.0, 0.0, 0.2],
-            [2.0, 2.0, 0.2],
-            [0.0, 1.0, 0.2],
-        ])
-        rng = random.Random(4321)
-        for _index in range(100):
-            target = HttpAutoMoveWorker._random_boundary_target(
-                boundary, 0.15, rng=rng
-            )
-            self.assertFalse(HttpAutoMoveWorker._boundary_outside(target, boundary))
-
-    def test_random_patrol_rejects_margin_that_consumes_range(self):
-        boundary = HttpAutoMoveWorker._boundary_geometry(
-            [0.0, 0.0, 0.0], length=2.0, width=1.0, yaw=0.0
-        )
-        with self.assertRaisesRegex(ValueError, "安全边距"):
-            HttpAutoMoveWorker._random_boundary_target(
-                boundary, 0.5, rng=random.Random(1)
-            )
-
-    def test_random_patrol_target_respects_minimum_distance(self):
-        boundary = HttpAutoMoveWorker._boundary_geometry(
-            [0.0, 0.0, 0.0], length=4.0, width=2.0, yaw=0.0
-        )
-        rng = random.Random(12)
-        for _index in range(100):
-            target = HttpAutoMoveWorker._random_boundary_target(
-                boundary,
-                0.15,
-                current_position=[0.0, 0.0, 0.0],
-                minimum_distance=0.5,
-                rng=rng,
-            )
-            self.assertFalse(HttpAutoMoveWorker._boundary_outside(target, boundary))
-            self.assertGreaterEqual(math.hypot(target[0], target[1]), 0.5)
-
     def test_execute_random_patrol_completes_requested_segment_count(self):
         worker = HttpAutoMoveWorker()
         client = _FakeClient()
@@ -324,83 +268,62 @@ class WorkerSequenceTest(unittest.TestCase):
         boundary = worker._boundary_geometry(
             [0.0, 0.0, 0.0], length=4.0, width=2.0, yaw=0.0
         )
-        current = [0.0, 0.0, 0.0]
-        endpoints = []
+        phases = []
 
-        worker._motion_pose = lambda _client, _label: (
-            "ready",
-            {"pos": list(current), "rpy": [0.0, 0.0, 0.0]},
-        )
+        class FixedRandom:
+            @staticmethod
+            def random():
+                return 0.25
 
-        def fake_random_target(
-            _boundary, _margin, *, current_position, minimum_distance, rng
-        ):
-            target_x = 1.8 if float(current_position[0]) <= 0.0 else -1.8
-            return [target_x, 0.0, 0.0]
+            @staticmethod
+            def uniform(_start, _end):
+                return 0.6
 
-        worker._random_boundary_target = fake_random_target
-        worker._turn_to_patrol_target = (
-            lambda _client, _boundary, _target, _speed, _tolerance, timeout:
-            ("reached", 0.5)
-        )
+        def fake_drive(_client, name, axes, duration, rate, cycle, total,
+                       *, boundary=None, visualize_command=False):
+            phases.append((
+                name, axes, duration, rate, cycle, total, boundary,
+                visualize_command,
+            ))
+            return "completed", 0.0
 
-        def fake_drive(_client, _boundary, start, endpoint, _speed,
-                       _tolerance, _timeout):
-            distance = math.hypot(
-                endpoint[0] - start[0], endpoint[1] - start[1]
-            )
-            endpoints.append(list(endpoint))
-            current[:] = endpoint
-            return "reached", distance, 0.02
-
-        worker._drive_patrol_segment = fake_drive
+        worker._random = FixedRandom()
+        worker._drive_once = fake_drive
         finished = []
         worker.finished_ok.connect(finished.append)
         worker._execute({
             "mode": "random_patrol",
             "boundary": boundary,
             "speed": 4000,
-            "segment_length": 1.0,
+            "move_duration": 1.2,
             "repetitions": 3,
             "infinite": False,
             "settle_time": 0.0,
             "prepare_action_id": None,
         })
 
-        self.assertEqual(len(endpoints), 3)
-        for actual, expected_x in zip(endpoints, (1.0, 0.0, 1.0)):
-            self.assertAlmostEqual(actual[0], expected_x)
-            self.assertAlmostEqual(actual[1], 0.0)
+        self.assertEqual(len(phases), 6)
+        self.assertTrue(all(phase[1]["turn_x"] == -4000 for phase in phases[::2]))
+        self.assertTrue(all(phase[2] == 0.6 for phase in phases[::2]))
+        self.assertTrue(all(phase[1]["move_y"] == 4000 for phase in phases[1::2]))
+        self.assertTrue(all(phase[2] == 1.2 for phase in phases[1::2]))
+        self.assertTrue(all(phase[7] for phase in phases))
         self.assertEqual(finished[-1], "随机巡逻完成")
 
-    def test_random_patrol_retries_turn_once_above_yaw_deadband(self):
+    def test_random_patrol_returns_to_center_when_turn_starts_outside(self):
         worker = HttpAutoMoveWorker()
         client = _FakeClient()
         worker._client = client
         worker._alive.set()
-        worker._stop_motion.wait = lambda _timeout: False
         boundary = worker._boundary_geometry(
             [0.0, 0.0, 0.0], length=4.0, width=2.0, yaw=0.0
         )
-        worker._motion_pose = lambda _client, _label: (
-            "ready",
-            {"pos": [0.0, 0.0, 0.0], "rpy": [0.0, 0.0, 0.0]},
-        )
-        worker._random_boundary_target = (
-            lambda _boundary, _margin, *, current_position, minimum_distance, rng:
-            [1.8, 0.0, 0.0]
-        )
-        turn_results = iter((("timeout", -8.99), ("reached", -2.0)))
-        turn_calls = []
-
-        def fake_turn(*_args, **_kwargs):
-            turn_calls.append(True)
-            return next(turn_results)
-
-        worker._turn_to_patrol_target = fake_turn
-        worker._drive_patrol_segment = (
-            lambda _client, _boundary, _start, _endpoint, _speed,
-            _tolerance, _timeout: ("reached", 1.0, 0.02)
+        worker._drive_once = lambda *_args, **_kwargs: ("outside", 1.1)
+        recovery_calls = []
+        worker._return_to_boundary_center = (
+            lambda _client, recovery_boundary, amplitude:
+            recovery_calls.append((recovery_boundary, amplitude))
+            or ("reached", 0.03)
         )
         logs = []
         worker.log_msg.connect(logs.append)
@@ -409,120 +332,53 @@ class WorkerSequenceTest(unittest.TestCase):
         worker._execute({
             "mode": "random_patrol",
             "boundary": boundary,
-            "speed": 20000,
-            "segment_length": 1.0,
-            "yaw_deadband": 5.0,
+            "speed": 5000,
+            "move_duration": 1.0,
             "repetitions": 1,
             "infinite": False,
             "settle_time": 0.0,
             "prepare_action_id": None,
         })
 
-        self.assertEqual(len(turn_calls), 2)
-        self.assertTrue(any("归零后补转一次" in line for line in logs))
-        self.assertTrue(any("补转完成" in line for line in logs))
+        self.assertEqual(recovery_calls, [(boundary, 5000)])
+        self.assertTrue(any("巡逻转向时检测到越界" in line for line in logs))
+        self.assertTrue(any("已回到中心" in line for line in logs))
         self.assertEqual(finished[-1], "随机巡逻完成")
 
-    def test_random_patrol_turn_stops_before_command_when_position_is_outside(self):
+    def test_random_patrol_returns_to_center_when_forward_crosses_boundary(self):
         worker = HttpAutoMoveWorker()
         client = _FakeClient()
+        worker._client = client
         worker._alive.set()
-        now = time.monotonic()
-        worker._pose_snapshot = lambda: {
-            "pos": [1.1, 0.0, 0.0],
-            "pos_at": now,
-            "rpy": [0.0, 0.0, 0.0],
-            "rpy_at": now,
-        }
-        boundary = worker._boundary_geometry(
-            [0.0, 0.0, 0.0], length=2.0, width=1.0, yaw=0.0
-        )
-        result, _error = worker._turn_to_patrol_target(
-            client,
-            boundary,
-            [0.0, 0.0, 0.0],
-            speed=5000,
-            tolerance=math.radians(5.0),
-            timeout=2.0,
-        )
-
-        self.assertEqual(result, "outside")
-        self.assertTrue(client.calls)
-        self.assertFalse(any(any(call.values()) for call in client.calls))
-
-    def test_random_patrol_turns_left_toward_target(self):
-        worker = HttpAutoMoveWorker()
-        client = _FakeClient()
-        worker._alive.set()
-        worker._stop_motion.wait = lambda _timeout: False
-        boundary = worker._boundary_geometry(
-            [0.0, 0.0, 0.0], length=4.0, width=4.0, yaw=0.0
-        )
-        yaws = iter((0.0, math.pi / 2.0))
-
-        def pose_snapshot():
-            now = time.monotonic()
-            return {
-                "pos": [0.0, 0.0, 0.0],
-                "pos_at": now,
-                "rpy": [0.0, 0.0, next(yaws)],
-                "rpy_at": now,
-            }
-
-        worker._pose_snapshot = pose_snapshot
-        result, error = worker._turn_to_patrol_target(
-            client,
-            boundary,
-            [0.0, 1.0, 0.0],
-            speed=4000,
-            tolerance=math.radians(5.0),
-            timeout=2.0,
-        )
-
-        commands = [call for call in client.calls if any(call.values())]
-        self.assertEqual(result, "reached")
-        self.assertAlmostEqual(error, 0.0)
-        self.assertEqual(len(commands), 1)
-        self.assertLess(commands[0]["turn_x"], 0)
-        self.assertEqual(commands[0]["move_y"], 0)
-
-    def test_random_patrol_moves_forward_for_segment_length(self):
-        worker = HttpAutoMoveWorker()
-        client = _FakeClient()
-        worker._alive.set()
-        worker._stop_motion.wait = lambda _timeout: False
         boundary = worker._boundary_geometry(
             [0.0, 0.0, 0.0], length=4.0, width=2.0, yaw=0.0
         )
-        positions = iter((0.0, 0.5, 1.0))
-
-        def pose_snapshot():
-            now = time.monotonic()
-            return {
-                "pos": [next(positions), 0.0, 0.0],
-                "pos_at": now,
-                "rpy": [0.0, 0.0, 0.0],
-                "rpy_at": now,
-            }
-
-        worker._pose_snapshot = pose_snapshot
-        result, traveled, endpoint_error = worker._drive_patrol_segment(
-            client,
-            boundary,
-            [0.0, 0.0, 0.0],
-            [1.0, 0.0, 0.0],
-            speed=4000,
-            tolerance=0.08,
-            timeout=2.0,
+        drive_results = iter((("completed", 0.0), ("outside", 1.1)))
+        worker._drive_once = lambda *_args, **_kwargs: next(drive_results)
+        recovery_calls = []
+        worker._return_to_boundary_center = (
+            lambda _client, recovery_boundary, amplitude:
+            recovery_calls.append((recovery_boundary, amplitude))
+            or ("reached", 0.04)
         )
+        logs = []
+        worker.log_msg.connect(logs.append)
+        finished = []
+        worker.finished_ok.connect(finished.append)
+        worker._execute({
+            "mode": "random_patrol",
+            "boundary": boundary,
+            "speed": 4000,
+            "move_duration": 1.0,
+            "repetitions": 1,
+            "infinite": False,
+            "settle_time": 0.0,
+            "prepare_action_id": None,
+        })
 
-        commands = [call for call in client.calls if any(call.values())]
-        self.assertEqual(result, "reached")
-        self.assertAlmostEqual(traveled, 1.0)
-        self.assertAlmostEqual(endpoint_error, 0.0)
-        self.assertTrue(commands)
-        self.assertTrue(all(call["move_y"] > 0 for call in commands))
-        self.assertTrue(all(call["move_x"] == 0 for call in commands))
+        self.assertEqual(recovery_calls, [(boundary, 4000)])
+        self.assertTrue(any("巡逻前进时检测到越界" in line for line in logs))
+        self.assertEqual(finished[-1], "随机巡逻完成")
 
     def test_drive_stops_before_command_when_already_outside_boundary(self):
         worker = HttpAutoMoveWorker()
@@ -548,6 +404,96 @@ class WorkerSequenceTest(unittest.TestCase):
         self.assertAlmostEqual(center_error, 1.1)
         self.assertTrue(all(value == 0 for value in client.calls[-1].values()))
         self.assertFalse(any(call["move_y"] == 5000 for call in client.calls))
+
+    def test_patrol_boundary_check_does_not_require_imu_heading(self):
+        worker = HttpAutoMoveWorker()
+        client = _FakeClient()
+        worker._alive.set()
+        with worker._pose_lock:
+            worker._latest_position = [0.0, 0.0, 0.0]
+            worker._latest_position_at = time.monotonic()
+            worker._latest_http_rpy = None
+            worker._latest_http_rpy_at = 0.0
+        boundary = worker._boundary_geometry(
+            [0.0, 0.0, 0.0], length=2.0, width=1.0, yaw=0.0
+        )
+
+        result, _center_error = worker._drive_once(
+            client,
+            "test",
+            {"move_x": 0, "move_y": 2000, "turn_x": 0, "turn_y": 0},
+            duration=0.03,
+            rate_hz=50.0,
+            cycle=1,
+            total=1,
+            boundary=boundary,
+        )
+
+        self.assertEqual(result, "completed")
+        self.assertTrue(any(call["move_y"] == 2000 for call in client.calls))
+
+    def test_patrol_forward_command_visualization_follows_current_yaw(self):
+        command = HttpAutoMoveWorker._joystick_command_visualization(
+            {
+                "pos": [1.0, 2.0, 0.0],
+                "rpy": [0.0, 0.0, math.pi / 2.0],
+            },
+            {"move_x": 0, "move_y": 5000, "turn_x": 0, "turn_y": 0},
+        )
+
+        self.assertEqual(command["phase"], "move")
+        self.assertAlmostEqual(command["current"][0], 1.0)
+        self.assertAlmostEqual(command["current"][1], 2.0)
+        self.assertAlmostEqual(command["target"][0], 1.0)
+        self.assertAlmostEqual(command["target"][1], 2.8)
+        self.assertAlmostEqual(command["current_yaw"], 90.0)
+
+    def test_patrol_turn_command_visualization_uses_turn_arc(self):
+        command = HttpAutoMoveWorker._joystick_command_visualization(
+            {
+                "pos": [1.0, 2.0, 0.0],
+                "rpy": [0.0, 0.0, 0.0],
+            },
+            {"move_x": 0, "move_y": 0, "turn_x": -5000, "turn_y": 0},
+        )
+
+        self.assertEqual(command["phase"], "turn")
+        self.assertEqual(command["target"], command["current"])
+        self.assertAlmostEqual(command["current_yaw"], 0.0)
+        self.assertAlmostEqual(command["target_yaw"], 90.0)
+
+    def test_visualized_drive_emits_command_then_clears_it(self):
+        worker = HttpAutoMoveWorker()
+        client = _FakeClient()
+        worker._alive.set()
+        now = time.monotonic()
+        worker._pose_snapshot = lambda: {
+            "pos": [0.0, 0.0, 0.0],
+            "pos_at": now,
+            "rpy": [0.0, 0.0, 0.0],
+            "rpy_at": now,
+        }
+        commands = []
+        worker.recovery_command.connect(commands.append)
+
+        result, _center_error = worker._drive_once(
+            client,
+            "向前巡逻",
+            {"move_x": 0, "move_y": 2000, "turn_x": 0, "turn_y": 0},
+            duration=0.03,
+            rate_hz=50.0,
+            cycle=1,
+            total=1,
+            boundary=worker._boundary_geometry(
+                [0.0, 0.0, 0.0], length=2.0, width=1.0, yaw=0.0
+            ),
+            visualize_command=True,
+        )
+
+        self.assertEqual(result, "completed")
+        self.assertTrue(any(command and command["phase"] == "move"
+                            for command in commands))
+        self.assertIsNone(commands[-1])
 
     def test_execute_inserts_return_center_then_continues_pair(self):
         worker = HttpAutoMoveWorker()
@@ -598,6 +544,17 @@ class WorkerSequenceTest(unittest.TestCase):
         )
         self.assertEqual(axes["move_x"], 0)
         self.assertGreater(axes["move_y"], 0)
+        self.assertEqual(axes["turn_x"], 0)
+
+    def test_return_center_turns_before_moving_when_center_is_behind(self):
+        axes = HttpAutoMoveWorker._axes_to_world_target(
+            [1.0, 0.0, 0.0], [0.0, 0.0, 0.0],
+            yaw=0.0, amplitude=5000, tolerance=0.05,
+        )
+
+        self.assertEqual(axes["move_x"], 0)
+        self.assertEqual(axes["move_y"], 0)
+        self.assertNotEqual(axes["turn_x"], 0)
 
     def test_return_center_caps_patrol_speed_and_accepts_near_center_timeout(self):
         worker = HttpAutoMoveWorker()
@@ -624,9 +581,29 @@ class WorkerSequenceTest(unittest.TestCase):
         )
 
         self.assertEqual((result, error), ("reached", 0.1707))
-        self.assertEqual(captured["amplitude"], 8000)
+        self.assertEqual(captured["amplitude"], 16000)
         self.assertAlmostEqual(captured["tolerance"], 0.15)
         self.assertTrue(any("近中心缓冲区" in line for line in logs))
+
+    def test_return_center_raises_low_speed_above_turn_deadband(self):
+        worker = HttpAutoMoveWorker()
+        client = _FakeClient()
+        captured = {}
+        worker._drive_to_boundary_center = (
+            lambda _client, _boundary, amplitude, _tolerance, _timeout:
+            captured.update(amplitude=amplitude) or ("reached", 0.03)
+        )
+
+        result, error = worker._return_to_boundary_center(
+            client,
+            worker._boundary_geometry(
+                [0.0, 0.0, 0.0], length=4.0, width=2.0, yaw=0.0
+            ),
+            amplitude=5000,
+        )
+
+        self.assertEqual((result, error), ("reached", 0.03))
+        self.assertEqual(captured["amplitude"], 8000)
 
     def test_return_center_does_not_accept_timeout_far_from_center(self):
         worker = HttpAutoMoveWorker()
@@ -654,6 +631,82 @@ class WorkerSequenceTest(unittest.TestCase):
         self.assertEqual(axes["move_x"], 0)
         self.assertGreaterEqual(axes["move_y"], 500)
         self.assertLess(axes["move_y"], 2500)
+
+    def test_return_center_logs_command_progress(self):
+        worker = HttpAutoMoveWorker()
+        client = _FakeClient()
+        worker._alive.set()
+        poses = iter((
+            [1.0, 0.0, 0.0],
+            [0.0, 0.0, 0.0],
+        ))
+
+        def pose_snapshot():
+            now = time.monotonic()
+            return {
+                "pos": next(poses),
+                "pos_at": now,
+                "rpy": [0.0, 0.0, 0.0],
+                "rpy_at": now,
+            }
+
+        worker._pose_snapshot = pose_snapshot
+        logs = []
+        worker.log_msg.connect(logs.append)
+        result, error = worker._drive_to_boundary_center(
+            client,
+            worker._boundary_geometry(
+                [0.0, 0.0, 0.0], length=2.0, width=1.0, yaw=0.0
+            ),
+            amplitude=5000,
+            tolerance=0.05,
+            timeout=1.0,
+        )
+
+        self.assertEqual((result, error), ("reached", 0.0))
+        self.assertTrue(any("回中心中" in line for line in logs))
+        moving_calls = [call for call in client.calls if any(call.values())]
+        self.assertEqual(len(moving_calls), 1)
+        self.assertEqual(moving_calls[0]["move_x"], 0)
+        self.assertEqual(moving_calls[0]["move_y"], 0)
+        self.assertNotEqual(moving_calls[0]["turn_x"], 0)
+
+    def test_return_center_stops_quickly_when_turn_has_no_response(self):
+        worker = HttpAutoMoveWorker()
+        client = _FakeClient()
+        worker._alive.set()
+        worker._RETURN_TURN_STALL_TIMEOUT = 0.03
+        worker._RETURN_TURN_PROGRESS = math.radians(3.0)
+
+        def unchanged_pose():
+            now = time.monotonic()
+            return {
+                "pos": [1.0, 0.0, 0.0],
+                "pos_at": now,
+                "rpy": [0.0, 0.0, 0.0],
+                "rpy_at": now,
+            }
+
+        worker._pose_snapshot = unchanged_pose
+        logs = []
+        commands = []
+        worker.log_msg.connect(logs.append)
+        worker.recovery_command.connect(commands.append)
+        result, error = worker._drive_to_boundary_center(
+            client,
+            worker._boundary_geometry(
+                [0.0, 0.0, 0.0], length=2.0, width=1.0, yaw=0.0
+            ),
+            amplitude=8000,
+            tolerance=0.05,
+            timeout=1.0,
+        )
+
+        self.assertEqual((result, error), ("turn_unresponsive", 1.0))
+        self.assertTrue(any("转向无响应" in line for line in logs))
+        self.assertTrue(any(command and command["phase"] == "turn"
+                            for command in commands))
+        self.assertTrue(all(value == 0 for value in client.calls[-1].values()))
 
     def test_return_center_pauses_for_stale_imu_then_resumes(self):
         worker = HttpAutoMoveWorker()

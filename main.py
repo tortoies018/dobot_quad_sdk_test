@@ -349,33 +349,21 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(tab, title)
 
     def _add_random_patrol_tab(self) -> None:
-        tab = QWidget()
-        form = QFormLayout(tab)
-        form.addRow(self._intro(
-            "必须先设置矩形或多点围栏。每段先从随机候选中选择尽量远的目标，"
-            "原地转向目标后向前移动设定长度；执行组数表示巡逻路段数量。"
-        ))
-        speed = self._stick_spin()
-        speed.setValue(5000)
-        speed.setSuffix(" 摇杆")
-        speed.setToolTip("转向和向前移动使用的 HTTP 摇杆幅值")
-        form.addRow("巡逻速度:", speed)
-        segment_length = self._double_spin(0.1, 20.0, 1.0, " m", 2, 0.1)
-        segment_length.setToolTip("每次转向完成后计划向前移动的距离")
-        form.addRow("每段长度:", segment_length)
-        yaw_deadband = self._double_spin(1.0, 30.0, 5.0, " °", 1, 0.5)
-        yaw_deadband.setToolTip(
-            "转向结束后的允许偏航误差；首次超时且误差超过此值时补转一次"
-        )
-        form.addRow("偏航误差死区:", yaw_deadband)
-        self._action_configs.append({
-            "kind": "random_patrol",
-            "title": "范围内分段随机巡逻",
-            "speed": speed,
-            "segment_length": segment_length,
-            "yaw_deadband": yaw_deadband,
-        })
-        self.tabs.addTab(tab, "随机巡逻")
+        """创建只按时间运动、只在越界时回中心的随机巡逻页签。"""  # 说明本页签不再设置位置或角度容差。
+        tab = QWidget()  # 创建随机巡逻页签容器。
+        form = QFormLayout(tab)  # 使用表单布局排列说明和参数。
+        intro = "必须先设置矩形或多点围栏。每段随机左转或右转一小段时间，然后按设定时间向前；普通巡逻不判断目标位置或航向，只有越界时才回中心。"  # 生成简化逻辑说明。
+        form.addRow(self._intro(intro))  # 把简化逻辑说明显示在页签顶部。
+        speed = self._stick_spin()  # 创建巡逻摇杆幅值输入框。
+        speed.setValue(5000)  # 设置适合首次低速测试的默认幅值。
+        speed.setSuffix(" 摇杆")  # 标明该数值直接对应摇杆幅值。
+        speed.setToolTip("随机转向和向前移动使用的 HTTP 摇杆幅值")  # 解释速度参数用途。
+        form.addRow("巡逻速度:", speed)  # 把速度输入框加入表单。
+        move_duration = self._double_spin(0.1, 60.0, 2.0, " s", 1, 0.1)  # 创建每段前进时间输入框。
+        move_duration.setToolTip("每次随机转向后，保持向前摇杆的时间")  # 解释时间参数不代表定位距离。
+        form.addRow("每段前进时间:", move_duration)  # 把前进时间输入框加入表单。
+        self._action_configs.append({"kind": "random_patrol", "title": "范围内简化随机巡逻", "speed": speed, "move_duration": move_duration})  # 保存构建命令所需控件。
+        self.tabs.addTab(tab, "随机巡逻")  # 把配置页加入自动动作选项卡。
 
     def _build_common_group(self) -> QGroupBox:
         group = QGroupBox("执行参数")
@@ -1075,8 +1063,7 @@ class MainWindow(QMainWindow):
                 "mode": "random_patrol",
                 "name": config["title"],
                 "speed": config["speed"].value(),
-                "segment_length": config["segment_length"].value(),
-                "yaw_deadband": config["yaw_deadband"].value(),
+                "move_duration": config["move_duration"].value(),  # 只传递开环前进时间，不再传距离和偏航死区。
             }
         amplitude = config["amplitude"].value()
         segments = []
