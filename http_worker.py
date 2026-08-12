@@ -28,12 +28,6 @@ class HttpAutoMoveWorker(QThread):
     _RETURN_MAX_AMPLITUDE = 8000
     _RETURN_MIN_AMPLITUDE = 500
     _RETURN_SLOW_RADIUS = 0.75
-    _PATROL_TURN_BREAKAWAY_FLOOR = 8000
-    _PATROL_TURN_SLOW_ANGLE = math.radians(90.0)
-    _PATROL_TURN_PULSE_MIN = 0.08
-    _PATROL_TURN_PULSE_MAX = 0.20
-    _PATROL_TURN_SETTLE = 0.10
-    _PATROL_HEADING_RECOVERY_LIMIT = 15.0
 
     connected = Signal(bool, str)
     exchange_data = Signal(dict)
@@ -538,8 +532,7 @@ class HttpAutoMoveWorker(QThread):
                 f"启动范围内分段随机巡逻: 路段数="
                 f"{'无限' if infinite else repetitions}，速度={speed}，"
                 f"每段长度={segment_length:.2f}m，"
-                f"偏航死区=±{yaw_deadband_degrees:.1f}°，"
-                f"转向脉冲下限={self._patrol_turn_breakaway(speed)}",
+                f"偏航死区=±{yaw_deadband_degrees:.1f}°",
             )
             segment = 0
             while self._alive.is_set() and not self._stop_motion.is_set():
@@ -606,7 +599,6 @@ class HttpAutoMoveWorker(QThread):
                     timeout=20.0,
                 )
                 self.recovery_command.emit(None)
-                turn_retried = False
                 if (
                     turn_result == "timeout"
                     and math.isfinite(yaw_error)
@@ -622,7 +614,6 @@ class HttpAutoMoveWorker(QThread):
                     )
                     if self._stop_motion.wait(0.2):
                         break
-                    turn_retried = True
                     turn_result, yaw_error = self._turn_to_patrol_target(
                         client,
                         boundary,
@@ -638,27 +629,6 @@ class HttpAutoMoveWorker(QThread):
                             f"巡逻路段 {segment} 补转完成: "
                             f"偏航误差={yaw_error:+.2f}°",
                         )
-                recovery_limit = min(
-                    self._PATROL_HEADING_RECOVERY_LIMIT,
-                    max(
-                        yaw_deadband_degrees * 2.0,
-                        yaw_deadband_degrees + 3.0,
-                    ),
-                )
-                if (
-                    turn_retried
-                    and turn_result == "timeout"
-                    and math.isfinite(yaw_error)
-                    and abs(yaw_error) <= recovery_limit
-                ):
-                    self._log(
-                        "WARN",
-                        f"巡逻路段 {segment}: 补转后残差 "
-                        f"{yaw_error:+.2f}°，仍超过死区 "
-                        f"±{yaw_deadband_degrees:.1f}°，但未超过前进纠偏上限 "
-                        f"±{recovery_limit:.1f}°；进入前进阶段继续纠偏",
-                    )
-                    turn_result = "reached"
                 if turn_result == "outside":
                     self._log(
                         "WARN",
@@ -1266,10 +1236,7 @@ class HttpAutoMoveWorker(QThread):
         started = time.monotonic()
         last_error = float("inf")
         while self._alive.is_set() and not self._stop_motion.is_set():
-            pose_started = time.monotonic()
             pose_status, pose = self._motion_pose(client, "巡逻转向")
-            # IMU/gRPC 暂停期间已经归零，不应消耗有效转向时限。
-            started += max(0.0, time.monotonic() - pose_started)
             if pose_status != "ready":
                 return pose_status, last_error
             position = pose["pos"]
@@ -1298,43 +1265,18 @@ class HttpAutoMoveWorker(QThread):
             if time.monotonic() - started >= timeout:
                 self._safe_stop(client)
                 return "timeout", last_error
-            speed_scale = min(
-                1.0, abs(yaw_error) / self._PATROL_TURN_SLOW_ANGLE
-            )
-            minimum = self._patrol_turn_breakaway(speed)
+            speed_scale = min(1.0, abs(yaw_error) / math.radians(30.0))
+            minimum = min(int(speed), 800)
             output = max(minimum, int(int(speed) * speed_scale))
             # 实机标定：turn_x 负值左转（yaw 增大），正值右转。
             turn_x = -output if yaw_error > 0.0 else output
             client.joystick(
                 move_x=0, move_y=0, turn_x=turn_x, turn_y=0
             )
-            pulse_scale = min(
-                1.0, abs(yaw_error) / self._PATROL_TURN_SLOW_ANGLE
-            )
-            pulse_duration = (
-                self._PATROL_TURN_PULSE_MIN
-                + (
-                    self._PATROL_TURN_PULSE_MAX
-                    - self._PATROL_TURN_PULSE_MIN
-                ) * pulse_scale
-            )
-            if self._stop_motion.wait(pulse_duration):
-                break
-            # 每个短脉冲后主动归零并等待 IMU 采样，既克服实机摇杆启动死区，
-            # 又避免高幅值命令持续到下一帧而越过目标角度。
-            self._safe_stop(client, attempts=1)
-            if self._stop_motion.wait(self._PATROL_TURN_SETTLE):
+            if self._stop_motion.wait(0.1):
                 break
         self._safe_stop(client)
         return "stopped", last_error
-
-    @classmethod
-    def _patrol_turn_breakaway(cls, speed: int) -> int:
-        speed = max(1, int(speed))
-        return min(
-            speed,
-            max(cls._PATROL_TURN_BREAKAWAY_FLOOR, speed // 2),
-        )
 
     def _drive_patrol_segment(
         self,
@@ -1359,10 +1301,7 @@ class HttpAutoMoveWorker(QThread):
         endpoint_error = length
         try:
             while self._alive.is_set() and not self._stop_motion.is_set():
-                pose_started = time.monotonic()
                 pose_status, pose = self._motion_pose(client, "巡逻前进")
-                # 传感器恢复等待期间保持归零，不计入有效前进时限。
-                started += max(0.0, time.monotonic() - pose_started)
                 if pose_status != "ready":
                     return pose_status, traveled, endpoint_error
                 position = pose["pos"]
@@ -1392,14 +1331,7 @@ class HttpAutoMoveWorker(QThread):
                 remaining = max(0.0, length - forward_progress)
                 move_scale = min(1.0, remaining / 0.30)
                 move_minimum = min(int(speed), 1000)
-                heading_scale = max(
-                    0.35,
-                    1.0 - abs(yaw_error) / math.radians(20.0),
-                )
-                move_y = max(
-                    move_minimum,
-                    int(int(speed) * move_scale * heading_scale),
-                )
+                move_y = max(move_minimum, int(int(speed) * move_scale))
                 turn_x = 0
                 if abs(yaw_error) > math.radians(2.0):
                     turn_limit = max(500, min(4000, int(speed) // 2))
@@ -1465,7 +1397,6 @@ class HttpAutoMoveWorker(QThread):
                     if self._stop_motion.is_set() or not self._alive.is_set():
                         return "stopped", last_error
                     return status, last_error
-                started += max(0.0, recovered_at - now)
                 self._log(
                     "INFO",
                     f"{motion_label}数据已恢复，"
