@@ -1,4 +1,5 @@
 import math
+import random
 import time
 import unittest
 
@@ -260,6 +261,69 @@ class WorkerSequenceTest(unittest.TestCase):
                 [2.0, 2.0, 0.0],
             ])
 
+    def test_rectangle_patrol_safety_margin_is_exact(self):
+        boundary = HttpAutoMoveWorker._boundary_geometry(
+            [3.0, -2.0, 0.0], length=4.0, width=2.0, yaw=math.pi / 3.0
+        )
+        safe = HttpAutoMoveWorker._inset_boundary(boundary, 0.30)
+
+        self.assertAlmostEqual(safe["length"], 3.40)
+        self.assertAlmostEqual(safe["width"], 1.40)
+        self.assertAlmostEqual(safe["yaw"], boundary["yaw"])
+        for point in safe["corners"]:
+            forward, left = HttpAutoMoveWorker._boundary_local_position(
+                point, boundary
+            )
+            self.assertLessEqual(abs(forward), 1.70 + 1e-9)
+            self.assertLessEqual(abs(left), 0.70 + 1e-9)
+
+    def test_polygon_patrol_safety_margin_stays_away_from_every_edge(self):
+        boundary = HttpAutoMoveWorker._polygon_boundary_geometry([
+            [0.0, 0.0, 0.0],
+            [4.0, 0.0, 0.0],
+            [3.0, 3.0, 0.0],
+            [0.0, 2.0, 0.0],
+        ])
+        margin = 0.40
+        safe = HttpAutoMoveWorker._inset_boundary(boundary, margin)
+
+        for point in safe["corners"]:
+            distances = []
+            for start, end in zip(
+                boundary["corners"],
+                boundary["corners"][1:] + boundary["corners"][:1],
+            ):
+                edge_x = end[0] - start[0]
+                edge_y = end[1] - start[1]
+                edge_length = math.hypot(edge_x, edge_y)
+                distance = abs(
+                    edge_x * (point[1] - start[1])
+                    - edge_y * (point[0] - start[0])
+                ) / edge_length
+                distances.append(distance)
+            self.assertGreaterEqual(min(distances), margin - 1e-9)
+
+    def test_random_patrol_targets_stay_inside_safety_margin(self):
+        boundary = HttpAutoMoveWorker._boundary_geometry(
+            [0.0, 0.0, 0.0], length=4.0, width=2.0, yaw=math.pi / 4.0
+        )
+        safe = HttpAutoMoveWorker._inset_boundary(boundary, 0.35)
+        rng = random.Random(1234)
+
+        for _index in range(100):
+            target = HttpAutoMoveWorker._random_boundary_target(safe, rng=rng)
+            self.assertFalse(
+                HttpAutoMoveWorker._boundary_outside(target, safe)
+            )
+
+    def test_patrol_safety_margin_rejects_consumed_range(self):
+        boundary = HttpAutoMoveWorker._boundary_geometry(
+            [0.0, 0.0, 0.0], length=2.0, width=1.0, yaw=0.0
+        )
+
+        with self.assertRaisesRegex(ValueError, "安全距离"):
+            HttpAutoMoveWorker._inset_boundary(boundary, 0.45)
+
     def test_execute_random_patrol_completes_requested_segment_count(self):
         worker = HttpAutoMoveWorker()
         client = _FakeClient()
@@ -280,10 +344,11 @@ class WorkerSequenceTest(unittest.TestCase):
                 return 0.6
 
         def fake_drive(_client, name, axes, duration, rate, cycle, total,
-                       *, boundary=None, visualize_command=False):
+                       *, boundary=None, visualize_command=False,
+                       visualization_target=None):
             phases.append((
                 name, axes, duration, rate, cycle, total, boundary,
-                visualize_command,
+                visualize_command, visualization_target,
             ))
             return "completed", 0.0
 
@@ -308,6 +373,7 @@ class WorkerSequenceTest(unittest.TestCase):
         self.assertTrue(all(phase[1]["move_y"] == 4000 for phase in phases[1::2]))
         self.assertTrue(all(phase[2] == 1.2 for phase in phases[1::2]))
         self.assertTrue(all(phase[7] for phase in phases))
+        self.assertTrue(all(phase[8] is not None for phase in phases))
         self.assertEqual(finished[-1], "随机巡逻完成")
 
     def test_random_patrol_returns_to_center_when_turn_starts_outside(self):

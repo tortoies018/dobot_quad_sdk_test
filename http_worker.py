@@ -507,10 +507,12 @@ class HttpAutoMoveWorker(QThread):
             move_speed = max(500, min(32767, int(command.get("move_speed", legacy_speed))))  # 限制独立前进摇杆幅值。
             turn_speed = max(500, min(32767, int(command.get("turn_speed", legacy_speed))))  # 限制独立旋转摇杆幅值。
             move_duration = max(0.1, min(60.0, float(command.get("move_duration", 2.0))))  # 限制每段前进时间。
+            safety_margin = max(0.05, min(10.0, float(command.get("safety_margin", 0.30))))  # 限制可调边界安全距离。
             repetitions = max(1, int(command.get("repetitions", 1)))  # 至少执行一个巡逻路段。
             infinite = bool(command.get("infinite", False))  # 读取是否无限循环的选项。
             settle_time = max(0.0, float(command.get("settle_time", 0.3)))  # 读取路段间停留时间。
             prepare_action_id = command.get("prepare_action_id")  # 读取可选的运动状态编号。
+            patrol_boundary = self._inset_boundary(boundary, safety_margin)  # 生成向内缩进后的实际巡逻安全线。
             if prepare_action_id is not None:  # 用户选择运动状态时先切换状态。
                 self._log("HTTP", f"POST {client.control_base}/settings/movement/action id={int(prepare_action_id)}")  # 记录状态切换请求。
                 client.movement_action(int(prepare_action_id))  # 请求控制器切换运动状态。
@@ -519,19 +521,28 @@ class HttpAutoMoveWorker(QThread):
                     return  # 不再发送后续巡逻命令。
 
             total_text = "∞" if infinite else str(repetitions)  # 生成日志中的总路段文本。
-            self._log("INFO", f"启动简化随机巡逻: 路段数={total_text}，前进速度={move_speed}，旋转速度={turn_speed}，每段前进={move_duration:.1f}s；仅越界时回中心")  # 记录独立的前进和旋转参数。
+            self._log("INFO", f"启动简化随机巡逻: 路段数={total_text}，前进速度={move_speed}，旋转速度={turn_speed}，每段前进={move_duration:.1f}s，边界安全距离={safety_margin:.2f}m；越过内部安全线时回中心")  # 记录速度、时间和安全距离。
             segment = 0  # 从尚未执行任何路段开始计数。
             while self._alive.is_set() and not self._stop_motion.is_set():  # 在线且未停止时持续巡逻。
                 if not infinite and segment >= repetitions:  # 有限模式完成指定路段数后退出。
                     break  # 跳出巡逻循环并报告完成。
                 segment += 1  # 开始一个新的巡逻路段。
-                turn_left = self._random.random() < 0.5  # 随机选择左转或右转。
+                pose = self._pose_snapshot()  # 获取当前位置和航向，用于生成及显示本段随机目标点。
+                current_position = pose.get("pos") if self._valid_pose_vector(pose.get("pos")) else None  # 只使用有效世界坐标。
+                random_target = self._random_boundary_target(patrol_boundary, current_position=current_position, rng=self._random)  # 在内部安全线内生成目标点。
+                rpy = pose.get("rpy")  # 读取当前 HTTP IMU 姿态。
+                if current_position is not None and self._valid_pose_vector(rpy):  # 坐标和航向都有效时让转向朝向随机点。
+                    target_yaw = math.atan2(random_target[1] - float(current_position[1]), random_target[0] - float(current_position[0]))  # 计算随机点方向。
+                    yaw_error = self._normalise_radians(target_yaw - float(rpy[2]))  # 计算最短转向方向。
+                    turn_left = yaw_error >= 0.0  # 左侧目标使用左转，右侧目标使用右转。
+                else:  # 姿态尚不可用时仍允许按原来的方式随机选择方向。
+                    turn_left = self._random.random() < 0.5  # 使用随机左右转作为安全回退。
                 turn_x = -turn_speed if turn_left else turn_speed  # 按实机标定和独立旋转速度设置转向命令。
                 turn_duration = self._random.uniform(0.3, 1.5)  # 随机选择开环转向持续时间。
                 turn_name = "随机左转" if turn_left else "随机右转"  # 生成人可读的转向名称。
-                self._log("PATROL", f"▶ 巡逻路段 {segment}/{total_text}: {turn_name} {turn_duration:.1f}s，然后前进 {move_duration:.1f}s")  # 记录不含位置和角度残差的简化计划。
+                self._log("PATROL", f"▶ 巡逻路段 {segment}/{total_text}: 安全随机点=({random_target[0]:.3f},{random_target[1]:.3f})m，{turn_name} {turn_duration:.1f}s，然后前进 {move_duration:.1f}s")  # 记录位于安全区内的随机点和开环动作。
 
-                turn_result, _center_error = self._drive_once(client, turn_name, {"move_x": 0, "move_y": 0, "turn_x": turn_x, "turn_y": 0}, turn_duration, 10.0, segment, repetitions, boundary=boundary, visualize_command=True)  # 按时间转向、监测越界并实时显示转向指令。
+                turn_result, _center_error = self._drive_once(client, turn_name, {"move_x": 0, "move_y": 0, "turn_x": turn_x, "turn_y": 0}, turn_duration, 10.0, segment, repetitions, boundary=patrol_boundary, visualize_command=True, visualization_target=random_target)  # 朝随机点开环转向并监测内部安全线。
                 if turn_result == "outside":  # 转向漂移导致越界时立即改为回中心。
                     self._log("WARN", "巡逻转向时检测到越界；已归零，开始回中心")  # 记录触发回中心的原因。
                     returned, center_error = self._return_to_boundary_center(client, boundary, move_speed, turn_speed)  # 分别使用前进和旋转幅值回到围栏中心。
@@ -547,7 +558,7 @@ class HttpAutoMoveWorker(QThread):
                     failure = f"巡逻路段 {segment} 转向中止（{turn_result}）"  # 保存安全中止原因。
                     break  # 结束巡逻循环。
 
-                move_result, _center_error = self._drive_once(client, "向前巡逻", {"move_x": 0, "move_y": move_speed, "turn_x": 0, "turn_y": 0}, move_duration, 10.0, segment, repetitions, boundary=boundary, visualize_command=True)  # 使用独立前进速度直行、监测越界并显示指令。
+                move_result, _center_error = self._drive_once(client, "向前巡逻", {"move_x": 0, "move_y": move_speed, "turn_x": 0, "turn_y": 0}, move_duration, 10.0, segment, repetitions, boundary=patrol_boundary, visualize_command=True, visualization_target=random_target)  # 向安全随机点方向开环前进并监测内部安全线。
                 if move_result == "outside":  # 前进越过围栏时立即改为回中心。
                     self._log("WARN", "巡逻前进时检测到越界；已归零，开始回中心")  # 记录触发回中心的原因。
                     returned, center_error = self._return_to_boundary_center(client, boundary, move_speed, turn_speed)  # 分别使用前进和旋转幅值回到围栏中心。
@@ -669,6 +680,7 @@ class HttpAutoMoveWorker(QThread):
         *,
         boundary: dict[str, Any] | None = None,
         visualize_command: bool = False,
+        visualization_target: list[float] | None = None,
     ) -> tuple[str, float]:
         started = time.monotonic()
         period = 1.0 / rate_hz
@@ -701,7 +713,7 @@ class HttpAutoMoveWorker(QThread):
                 if elapsed >= duration:
                     break
                 if visualize_command:  # 随机巡逻的每个控制周期都刷新当前指令图形。
-                    command_view = self._joystick_command_visualization(pose, axes)  # 把摇杆方向换算成世界坐标箭头或转向弧。
+                    command_view = self._joystick_command_visualization(pose, axes, target=visualization_target)  # 优先显示本段安全随机点。
                     if command_view is not None:  # 位置或 IMU 暂不可用时保留上一帧，不发送错误图形。
                         self.recovery_command.emit(command_view)  # 将本周期指令发送给 3D 轨迹控件。
                 client.joystick(**axes)
@@ -724,6 +736,8 @@ class HttpAutoMoveWorker(QThread):
         cls,
         pose: dict[str, Any],
         axes: dict[str, int],
+        *,
+        target: list[float] | None = None,
     ) -> dict[str, Any] | None:
         """把当前摇杆命令转换成 3D 视图使用的世界坐标指令。"""  # 开环动作没有真实目标点，因此只画方向和转向趋势。
         position = pose.get("pos")  # 读取当前世界坐标。
@@ -736,6 +750,11 @@ class HttpAutoMoveWorker(QThread):
         move_y = int(axes.get("move_y", 0))  # 读取前正后负的纵向摇杆值。
         turn_x = int(axes.get("turn_x", 0))  # 读取右正左负的转向摇杆值。
         current_yaw = math.degrees(yaw)  # 绘图接口使用角度而不是弧度。
+        if target is not None and cls._valid_pose_vector(target):  # 随机巡逻提供安全目标点时优先画真实生成点。
+            target_point = [float(value) for value in target[:3]]  # 复制目标坐标避免修改规划数据。
+            target_yaw = math.degrees(math.atan2(target_point[1] - current[1], target_point[0] - current[0]))  # 计算当前位置指向目标点的航向。
+            phase = "turn" if move_x == 0 and move_y == 0 and turn_x != 0 else "move"  # 选择黄色转向弧或紫色移动线。
+            return {"current": current, "target": target_point, "current_yaw": current_yaw, "target_yaw": target_yaw, "phase": phase}  # 显示当前位置到安全随机点的指令。
         if move_x == 0 and move_y == 0 and turn_x != 0:  # 纯转向动作使用黄色圆弧显示方向。
             turn_degrees = 90.0 if turn_x < 0 else -90.0  # 按实机标定把摇杆符号换算成左转或右转。
             return {"current": current, "target": list(current), "current_yaw": current_yaw, "target_yaw": current_yaw + turn_degrees, "phase": "turn"}  # 返回原地转向可视化参数。
@@ -777,6 +796,76 @@ class HttpAutoMoveWorker(QThread):
             "width": float(width),
             "yaw": float(yaw),
         }
+
+    @classmethod
+    def _inset_boundary(
+        cls,
+        boundary: dict[str, Any],
+        margin: float,
+    ) -> dict[str, Any]:
+        """生成与原围栏各边至少保持指定距离的内部安全围栏。"""  # 随机点和提前回中心检测共用该范围。
+        margin = max(0.0, float(margin))  # 把安全距离规范为非负浮点数。
+        center = [float(value) for value in boundary["center"][:3]]  # 复制围栏中心坐标。
+        if boundary.get("kind") != "polygon":  # 矩形可以精确地从四边各缩进指定距离。
+            length = float(boundary["length"]) - margin * 2.0  # 同时缩进长边两端。
+            width = float(boundary["width"]) - margin * 2.0  # 同时缩进宽边两端。
+            if length < 0.20 or width < 0.20:  # 保留最小可用巡逻区域，避免退化几何。
+                maximum = max(0.0, min(float(boundary["length"]), float(boundary["width"])) / 2.0 - 0.10)  # 计算当前矩形允许的近似上限。
+                raise ValueError(f"边界安全距离 {margin:.2f}m 过大；当前围栏最多约可设置 {maximum:.2f}m")  # 提示用户降低安全距离或扩大围栏。
+            return cls._boundary_geometry(center, length, width, float(boundary["yaw"]))  # 返回同中心、同朝向的精确内缩矩形。
+
+        corners = boundary["corners"]  # 读取凸多边形边界点。
+        minimum_center_distance = float("inf")  # 查找中心到最近边的垂直距离。
+        for start, end in zip(corners, corners[1:] + corners[:1]):  # 逐边计算中心到直线的距离。
+            edge_x = float(end[0]) - float(start[0])  # 计算边的 X 分量。
+            edge_y = float(end[1]) - float(start[1])  # 计算边的 Y 分量。
+            edge_length = math.hypot(edge_x, edge_y)  # 计算边长用于归一化。
+            if edge_length <= 1e-9:  # 重复顶点不能形成有效围栏边。
+                raise ValueError("运动范围含重复边界点")  # 拒绝退化多边形。
+            center_cross = abs(edge_x * (center[1] - float(start[1])) - edge_y * (center[0] - float(start[0])))  # 计算边与中心向量的叉积绝对值。
+            minimum_center_distance = min(minimum_center_distance, center_cross / edge_length)  # 保存最近边距离。
+        if minimum_center_distance <= margin + 0.10:  # 内缩后必须给中心附近保留至少二十厘米直径。
+            maximum = max(0.0, minimum_center_distance - 0.10)  # 计算当前多边形允许的近似上限。
+            raise ValueError(f"边界安全距离 {margin:.2f}m 过大；当前多点围栏最多约可设置 {maximum:.2f}m")  # 提示用户修改参数。
+        scale = 1.0 - margin / minimum_center_distance  # 计算以中心为基准的保守内缩比例。
+        inset_corners = [[center[0] + (float(point[0]) - center[0]) * scale, center[1] + (float(point[1]) - center[1]) * scale, center[2]] for point in corners]  # 生成与每条原边至少相距 margin 的相似多边形。
+        inset = cls._polygon_boundary_geometry(inset_corners)  # 重新计算内缩多边形跨度和几何中心。
+        inset["center"] = center  # 保持回中心目标与外部围栏完全一致。
+        return inset  # 返回内部安全围栏。
+
+    @staticmethod
+    def _random_boundary_target(
+        boundary: dict[str, Any],
+        *,
+        current_position: list[float] | None = None,
+        rng: Any = random,
+    ) -> list[float]:
+        """在凸安全围栏内按面积随机生成巡逻点。"""  # 生成点已经通过内缩围栏保证边界安全距离。
+        center = [float(value) for value in boundary["center"][:3]]  # 使用安全围栏中心拆分三角形。
+        corners = boundary["corners"]  # 读取安全围栏顶点。
+        triangles: list[tuple[list[float], list[float], float]] = []  # 保存三角形边点和累计面积。
+        total_area = 0.0  # 初始化安全区域总面积。
+        for start, end in zip(corners, corners[1:] + corners[:1]):  # 将凸围栏拆成中心到每条边的三角形。
+            area = abs((float(start[0]) - center[0]) * (float(end[1]) - center[1]) - (float(start[1]) - center[1]) * (float(end[0]) - center[0])) / 2.0  # 计算当前三角形面积。
+            if area <= 1e-12:  # 跳过退化三角形。
+                continue  # 继续处理下一条边。
+            total_area += area  # 累加面积供加权选择。
+            triangles.append((start, end, total_area))  # 保存当前三角形的累计面积上限。
+        if not triangles:  # 没有有效面积时无法生成随机点。
+            raise ValueError("边界安全距离内没有可用巡逻区域")  # 要求用户减小安全距离或扩大围栏。
+        for _attempt in range(64):  # 尝试避开离当前位置过近的无效目标点。
+            selected = rng.random() * total_area  # 按面积随机选择一个三角形。
+            start, end, _limit = triangles[-1]  # 默认使用最后一个三角形以处理浮点边界。
+            for candidate_start, candidate_end, limit in triangles:  # 查找随机面积落入的三角形。
+                if selected <= limit:  # 找到对应累计面积区间。
+                    start, end = candidate_start, candidate_end  # 选择当前三角形。
+                    break  # 停止查找。
+            radial = math.sqrt(rng.random())  # 使用平方根保证三角形内面积均匀。
+            along = rng.random()  # 随机选择两条外边顶点之间的比例。
+            target = [(1.0 - radial) * center[0] + radial * ((1.0 - along) * float(start[0]) + along * float(end[0])), (1.0 - radial) * center[1] + radial * ((1.0 - along) * float(start[1]) + along * float(end[1])), center[2]]  # 生成三角形内的随机世界坐标。
+            if current_position is None or math.hypot(target[0] - float(current_position[0]), target[1] - float(current_position[1])) >= 0.20:  # 避免生成几乎等于当前位置的点。
+                return target  # 返回满足条件的安全随机点。
+        return center  # 区域很小时回退到一定安全的围栏中心。
 
     @staticmethod
     def _convex_hull(points: list[list[float]]) -> list[list[float]]:
