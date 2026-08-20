@@ -1038,8 +1038,7 @@ class MainWindow(QMainWindow):
         widget = self._api_param_widgets[field_path]
         # 根据当前状态或输入选择对应的处理路径。
         if isinstance(widget, QComboBox):
-            return widget.currentData()
-        # 根据当前状态或输入选择对应的处理路径。
+            return widget.currentData()        # 根据当前状态或输入选择对应的处理路径。
         if isinstance(widget, QCheckBox):
             return widget.isChecked()
         # 根据当前状态或输入选择对应的处理路径。
