@@ -16,12 +16,22 @@ from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
-from urllib.request import Request, urlopen
+from urllib.request import ProxyHandler, Request, build_opener
 
 
 # 定义本模块后续逻辑使用的常量或默认配置。
 STICK_MIN = -32768
 STICK_MAX = 32767
+
+# 机器人控制器和算法服务都位于局域网。显式使用无代理 opener，避免桌面代理、
+# VPN 或 HTTP_PROXY 把 10.x / 192.168.x 请求转发到代理服务器并最终超时。
+_DIRECT_OPENER = build_opener(ProxyHandler({}))
+
+
+def _open_direct(request: Request, timeout: float):
+    """Open one robot HTTP request without consulting system proxy settings."""
+
+    return _DIRECT_OPENER.open(request, timeout=timeout)
 
 
 # 表示机器狗 HTTP 接口返回的业务或通信错误。
@@ -93,7 +103,7 @@ class MH4HttpClient:
         # 尝试执行可能失败的操作并交由异常分支处理。
         try:
             # 在受控上下文中安全访问共享资源。
-            with urlopen(request, timeout=self.timeout) as response:
+            with _open_direct(request, timeout=self.timeout) as response:
                 raw = response.read()
                 headers = getattr(response, "headers", None)
                 content_type = (
@@ -183,7 +193,7 @@ class MH4HttpClient:
         # 尝试执行可能失败的操作并交由异常分支处理。
         try:
             # 在受控上下文中安全访问共享资源。
-            with urlopen(request, timeout=self.timeout) as response:
+            with _open_direct(request, timeout=self.timeout) as response:
                 raw = response.read()
         # 捕获异常并执行日志记录或安全降级。
         except HTTPError as exc:
@@ -259,6 +269,16 @@ class MH4HttpClient:
         if not isinstance(result, dict):
             raise MH4HttpError(f"exchange 返回格式错误: {result!r}")
         return result
+
+    # 启动机器人内置的前后双路无线图传。
+    def start_streaming(self) -> dict[str, Any]:
+        result = self._request("POST", "/settings/streaming/start")
+        return self._require_success(result, "启动图传")
+
+    # 停止机器人内置的前后双路无线图传。
+    def stop_streaming(self) -> dict[str, Any]:
+        result = self._request("POST", "/settings/streaming/stop")
+        return self._require_success(result, "停止图传")
 
     # 发送一次移动摇杆控制指令。
     def joystick(

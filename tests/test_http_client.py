@@ -29,7 +29,7 @@ class MH4HttpClientTest(unittest.TestCase):
         self.requests = []
         self.responses = {}
         self.urlopen_patch = patch(
-            "http_auto_move.http_client.urlopen", side_effect=self._urlopen
+            "http_auto_move.http_client._open_direct", side_effect=self._urlopen
         )
         self.urlopen_patch.start()
         self.addCleanup(self.urlopen_patch.stop)
@@ -129,6 +129,17 @@ class MH4HttpClientTest(unittest.TestCase):
         self.assertEqual(
             self.requests[-1],
             ("POST", "/settings/emergencyStop", {"value": True}),
+        )
+
+    def test_start_and_stop_streaming(self):
+        self.client.start_streaming()
+        self.client.stop_streaming()
+        self.assertEqual(
+            self.requests[-2:],
+            [
+                ("POST", "/settings/streaming/start", None),
+                ("POST", "/settings/streaming/stop", None),
+            ],
         )
 
     def test_false_status_raises(self):

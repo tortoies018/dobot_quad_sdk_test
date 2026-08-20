@@ -10,9 +10,8 @@ import json
 import math
 import sys
 import time
-from pathlib import Path
 from typing import Any
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlsplit
 
 # 导入本模块所需的库、类型和外部组件。
 from PySide6.QtCore import Qt, QTimer
@@ -49,6 +48,8 @@ try:
     from .http_worker import HttpAutoMoveWorker
     from .motion_totals import MotionTotals
     from .motion import direction_axes
+    from .trajectory_plot import TrajectoryPlot3D
+    from .video_panel import TwoVideoPanel
 # 捕获异常并执行日志记录或安全降级。
 except ImportError:  # 支持 python3 http_auto_move/main.py
     from api_catalog import ENDPOINTS, ApiEndpoint
@@ -56,13 +57,8 @@ except ImportError:  # 支持 python3 http_auto_move/main.py
     from http_worker import HttpAutoMoveWorker
     from motion_totals import MotionTotals
     from motion import direction_axes
-
-# 定义本模块后续逻辑使用的常量或默认配置。
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-# 必要条件或数据不满足时执行安全处理。
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(PROJECT_ROOT))
-from trajectory_plot import TrajectoryPlot3D
+    from trajectory_plot import TrajectoryPlot3D
+    from video_panel import TwoVideoPanel
 
 
 # 封装主窗口、操作控件以及机器人状态展示。
@@ -88,6 +84,7 @@ class MainWindow(QMainWindow):
         self._worker.finished_ok.connect(self._on_finished)
         self._worker.emergency_result.connect(self._on_emergency_result)
         self._worker.manual_api_result.connect(self._on_manual_api_result)
+        self._worker.video_stream_result.connect(self._on_video_stream_result)
         self._worker.finished.connect(self._on_worker_thread_finished)
         self._connected = False
         self._moving = False
@@ -131,7 +128,7 @@ class MainWindow(QMainWindow):
         detail_splitter.setChildrenCollapsible(False)
         detail_splitter.setHandleWidth(6)
         detail_splitter.setStyleSheet("QSplitter::handle { background:#42464c; }")
-        detail_splitter.addWidget(self._build_trajectory_group())
+        detail_splitter.addWidget(self._build_monitor_tabs())
         detail_splitter.addWidget(self._build_log_group())
         detail_splitter.setSizes([430, 190])
         right_layout.addWidget(detail_splitter, 1)
@@ -692,6 +689,22 @@ class MainWindow(QMainWindow):
         # 执行本逻辑段的数据处理、状态同步或界面更新。
         layout.addWidget(self.status_tabs)
         return group
+
+    # 在同一区域提供轨迹与前后双路视频选项卡。
+    def _build_monitor_tabs(self) -> QTabWidget:
+        tabs = QTabWidget()
+        tabs.setStyleSheet(
+            "QTabWidget::pane { border:1px solid #55585e; background:#292b30; }"
+            "QTabBar::tab { background:#3a3d42; color:#d8d8d8; padding:7px 14px; }"
+            "QTabBar::tab:selected { background:#00897b; color:#fff; }"
+        )
+        tabs.addTab(self._build_trajectory_group(), "3D 轨迹")
+        self.video_panel = TwoVideoPanel()
+        self.video_panel.restart_requested.connect(
+            lambda: self._worker.set_video_streaming(True)
+        )
+        tabs.addTab(self.video_panel, "前后视频")
+        return tabs
 
     # 构建 trajectory_group 对应的界面区域。
     def _build_trajectory_group(self) -> QGroupBox:
@@ -1474,6 +1487,11 @@ class MainWindow(QMainWindow):
         if ok:
             self.connection_label.setText(f"已连接 {detail}")
             self._set_connected_ui(True)
+            control_base = MH4HttpClient(self.address_edit.text()).control_base
+            host = urlsplit(control_base).hostname
+            if host:
+                self.video_panel.configure_host(host)
+                self._worker.set_video_streaming(True)
         # 其余情况进入默认的处理路径。
         else:
             self.connection_label.setText(detail)
@@ -1481,6 +1499,11 @@ class MainWindow(QMainWindow):
             self._moving = False
             self._api_request_pending = False
             self._set_connected_ui(False)
+            self.video_panel.stop()
+
+    # HTTP 图传启停完成后再让异步播放器连接 RTSP，避免无效重试。
+    def _on_video_stream_result(self, ok: bool, detail: str) -> None:
+        self.video_panel.set_streaming_result(ok, detail)
 
     # 处理 worker_thread_finished 事件并同步界面状态。
     def _on_worker_thread_finished(self) -> None:
@@ -1686,6 +1709,7 @@ class MainWindow(QMainWindow):
             )
             event.ignore()
             return
+        self.video_panel.shutdown()
         event.accept()
 
     # ── 样式与控件辅助 ───────────────────────────
@@ -1825,6 +1849,7 @@ class MainWindow(QMainWindow):
 # 创建应用程序并启动图形界面事件循环。
 def main() -> None:
     app = QApplication(sys.argv)
+    app.setOrganizationName("Dobot")
     app.setApplicationName("MH4 HTTP Auto Move")
     window = MainWindow()
     window.show()

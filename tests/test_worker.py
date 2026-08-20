@@ -1,4 +1,5 @@
 import math
+import os
 import random
 import time
 import unittest
@@ -20,6 +21,14 @@ class _FakeClient:
         )
         return {"status": True}
 
+    def start_streaming(self):
+        self.calls.append("start_streaming")
+        return {"status": True}
+
+    def stop_streaming(self):
+        self.calls.append("stop_streaming")
+        return {"status": True}
+
 
 class _FakeManualClient:
     control_base = "http://127.0.0.1:22000"
@@ -37,6 +46,42 @@ class _FakeManualClient:
 
 
 class WorkerSequenceTest(unittest.TestCase):
+    def test_video_streaming_is_controlled_by_worker(self):
+        worker = HttpAutoMoveWorker()
+        client = _FakeClient()
+        worker._client = client
+        results = []
+        worker.video_stream_result.connect(
+            lambda ok, message: results.append((ok, message))
+        )
+
+        worker._execute_video_streaming({"enabled": True})
+        worker._execute_video_streaming({"enabled": False})
+
+        self.assertEqual(client.calls, ["start_streaming", "stop_streaming"])
+        self.assertTrue(all(ok for ok, _message in results))
+        self.assertFalse(worker._video_streaming)
+
+    def test_grpc_robot_host_is_added_to_proxy_bypass(self):
+        variables = ("no_grpc_proxy", "no_proxy", "NO_PROXY")
+        saved = {name: os.environ.get(name) for name in variables}
+        try:
+            os.environ["no_grpc_proxy"] = "example.com"
+            os.environ["no_proxy"] = ""
+            os.environ["NO_PROXY"] = "localhost"
+            HttpAutoMoveWorker._add_grpc_no_proxy_host("10.30.12.111")
+            for name in variables:
+                entries = os.environ[name].split(",")
+                self.assertIn("10.30.12.111", entries)
+                self.assertIn("127.0.0.1", entries)
+                self.assertIn("localhost", entries)
+        finally:
+            for name, value in saved.items():
+                if value is None:
+                    os.environ.pop(name, None)
+                else:
+                    os.environ[name] = value
+
     @staticmethod
     def _pose(pos, yaw_deg):
         return {

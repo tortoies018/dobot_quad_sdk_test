@@ -7,6 +7,7 @@ from __future__ import annotations
 # 导入本模块所需的库、类型和外部组件。
 import math
 import json
+import os
 import queue
 import random
 import threading
@@ -50,6 +51,7 @@ class HttpAutoMoveWorker(QThread):
     finished_ok = Signal(str)
     emergency_result = Signal(bool, str)
     manual_api_result = Signal(bool, str, object)
+    video_stream_result = Signal(bool, str)
 
     # 初始化对象状态以及运行所需的资源。
     def __init__(self, parent=None):
@@ -73,6 +75,7 @@ class HttpAutoMoveWorker(QThread):
         self._latest_http_rpy: list[float] | None = None
         self._latest_http_rpy_at = 0.0
         self._random = random.Random()
+        self._video_streaming = False
 
     # 写入后台线程的连接参数并清除旧姿态。
     def configure(
@@ -117,6 +120,10 @@ class HttpAutoMoveWorker(QThread):
             "payload": payload,
             "port": int(port),
         })
+
+    # 在后台线程中启动或停止无线图传，避免 HTTP 超时阻塞界面。
+    def set_video_streaming(self, enabled: bool) -> None:
+        self._commands.put({"_kind": "video_stream", "enabled": bool(enabled)})
 
     # 通知当前移动任务尽快停止。
     def stop_move(self) -> None:
@@ -217,6 +224,9 @@ class HttpAutoMoveWorker(QThread):
                 if command.get("_kind") == "manual_api":
                     self._execute_manual_api(command)
                     continue
+                if command.get("_kind") == "video_stream":
+                    self._execute_video_streaming(command)
+                    continue
                 self._stop_motion.clear()
                 self._execute(command)
         # 无论执行结果如何都完成必要的收尾处理。
@@ -226,6 +236,13 @@ class HttpAutoMoveWorker(QThread):
             # 必要条件或数据不满足时执行安全处理。
             if self._client is not None:
                 self._safe_stop(self._client)
+                if self._video_streaming:
+                    try:
+                        self._client.stop_streaming()
+                        self._log("INFO", "HTTP 前后图传已停止")
+                    except Exception as exc:
+                        self._log("WARN", f"停止 HTTP 图传失败: {exc}")
+                    self._video_streaming = False
             # 必要条件或数据不满足时执行安全处理。
             if self._heartbeat_thread is not None:
                 self._heartbeat_thread.join(timeout=self._timeout + 0.5)
@@ -306,6 +323,7 @@ class HttpAutoMoveWorker(QThread):
         if not host:
             self.trajectory_status.emit(False, "无法从 HTTP 地址解析 gRPC 主机")
             return
+        self._add_grpc_no_proxy_host(host)
         address = f"{host}:{self._grpc_port}"
         robot = None
         failures = 0
@@ -384,6 +402,21 @@ class HttpAutoMoveWorker(QThread):
                 except Exception:
                     pass
             self.trajectory_status.emit(False, "gRPC 轨迹采样已停止")
+
+    @staticmethod
+    def _add_grpc_no_proxy_host(host: str) -> None:
+        """Keep the robot gRPC channel away from desktop HTTP/VPN proxies."""
+
+        required = (host, "127.0.0.1", "localhost")
+        for variable in ("no_grpc_proxy", "no_proxy", "NO_PROXY"):
+            existing = [
+                item.strip()
+                for item in os.environ.get(variable, "").split(",")
+                if item.strip()
+            ]
+            known = {item.lower() for item in existing}
+            existing.extend(item for item in required if item.lower() not in known)
+            os.environ[variable] = ",".join(existing)
 
     # 解析并执行一个完整的移动动作配置。
     def _execute(self, command: dict[str, Any]) -> None:
@@ -730,6 +763,32 @@ class HttpAutoMoveWorker(QThread):
         finally:  # 无论以何种方式退出都执行安全清理。
             self._safe_stop(client)  # 重复发送全零摇杆，确保机器狗停止。
             self.recovery_command.emit(None)  # 清除界面上的回中心指令标记。
+
+    # 执行界面请求的 HTTP 图传启停操作。
+    def _execute_video_streaming(self, command: dict[str, Any]) -> None:
+        """Run the streaming control endpoint without touching the GUI thread."""
+
+        client = self._client
+        if client is None:
+            self.video_stream_result.emit(False, "尚未连接机器人，无法启动视频")
+            return
+        enabled = bool(command.get("enabled"))
+        try:
+            if enabled:
+                client.start_streaming()
+                self._video_streaming = True
+                message = "HTTP 图传已启动：前置 camera1 / 后置 camera2"
+            else:
+                client.stop_streaming()
+                self._video_streaming = False
+                message = "HTTP 前后图传已停止"
+            self._log("INFO", message)
+            self.video_stream_result.emit(True, message)
+        except Exception as exc:
+            action = "启动" if enabled else "停止"
+            message = f"{action} HTTP 图传失败: {exc}"
+            self._log("ERROR", message)
+            self.video_stream_result.emit(False, message)
 
     # 执行界面提交的手动 API 请求。
     def _execute_manual_api(self, command: dict[str, Any]) -> None:

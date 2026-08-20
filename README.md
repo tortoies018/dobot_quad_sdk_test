@@ -25,8 +25,11 @@ python3 -m http_auto_move.main
 python3 http_auto_move/main.py
 ```
 
-依赖项目已有的 `PySide6`、`pyqtgraph`、`PyOpenGL` 和 `dobot_quad`。
+依赖项目已有的 `PySide6`（含 Qt Multimedia）、`pyqtgraph`、`PyOpenGL` 和 `dobot_quad`。
 HTTP 客户端本身使用 Python 标准库。
+
+前后画面由 HTTP 接口启动，再通过机器人内置的无线 RTSP 服务播放；不依赖 DDS、
+CycloneDDS 配置或 `192.168.5.x` 网线连接。
 
 当前机器狗地址和文档固定地址：
 
@@ -43,7 +46,8 @@ HTTP 客户端本身使用 Python 标准库。
 
 连接方式默认使用“自动检测”：程序先读取 `/connection/type`，再把实际的
 `AP` 或 `Station` 写入 `/connection/state`。使用 `192.168.5.2` 网线地址时应显示
-`Station`，不要登记为 `AP`。
+`Station`，不要登记为 `AP`。机器人和算法服务的局域网 HTTP 请求会直接连接，
+不会继承桌面代理或 VPN 的 HTTP 代理设置。
 
 当前默认映射来自点足 miniQuad 实机标定：
 
@@ -142,6 +146,10 @@ HTTP 客户端本身使用 Python 标准库。
 
 ## 轨迹与状态
 
+- 原 3D 轨迹区域现在提供“3D 轨迹 / 前后视频”两个选项卡，左右固定显示前置
+  `camera1` 和后置 `camera2` 彩色画面；HTTP 连接成功后自动调用图传启动接口，
+  播放器通过同一机器人 Wi-Fi 地址的 RTSP `:8554` 异步接收视频；
+- HTTP 未提供深度图，因此界面不再显示深度画面，也不加载 DDS 或要求网线连接；
 - 右侧 `exchange` 面板分为“实时状态”和“温度”两个选项卡；实时状态按两列
   显示，温度页显示 IMU、BMS PCB/AFE，以及四条腿各关节的控制板、MOS 管和
   电机温度；
