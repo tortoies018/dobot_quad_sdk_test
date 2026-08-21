@@ -1501,7 +1501,7 @@ class MainWindow(QMainWindow):
             self._set_connected_ui(False)
             self.video_panel.stop()
 
-    # HTTP 图传启停完成后再让异步播放器连接 RTSP，避免无效重试。
+    # HTTP 图传启停完成后再建立异步 WebRTC，避免相机未就绪时无效重试。
     def _on_video_stream_result(self, ok: bool, detail: str) -> None:
         self.video_panel.set_streaming_result(ok, detail)
 
@@ -1699,6 +1699,8 @@ class MainWindow(QMainWindow):
 
     # 封装 closeEvent 对应的独立处理逻辑。
     def closeEvent(self, event) -> None:  # noqa: N802 - Qt API
+        # 先通知 WebRTC 后台退出，让其与 HTTP 安全停止并行收尾。
+        self.video_panel.stop()
         self._worker.shutdown()
         # 必要条件或数据不满足时执行安全处理。
         if self._worker.isRunning() and not self._worker.wait(8000):

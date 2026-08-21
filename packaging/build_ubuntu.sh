@@ -30,6 +30,8 @@ rm -rf "$OUTPUT_DIR"
     --paths "$SDK_DIR" \
     --hidden-import dobot_quad \
     --collect-all dobot_quad \
+    --collect-all aiortc \
+    --collect-all av \
     --collect-all OpenGL \
     "$APP_DIR/main.py"
 

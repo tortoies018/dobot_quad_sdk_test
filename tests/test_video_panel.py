@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from http_auto_move.video_panel import VIDEO_STREAMS, video_stream_url
+from http_auto_move.video_panel import VIDEO_STREAMS, webrtc_offer_url
 
 
 class VideoPanelTest(unittest.TestCase):
@@ -12,21 +12,21 @@ class VideoPanelTest(unittest.TestCase):
             (("前置画面", "camera1"), ("后置画面", "camera2")),
         )
 
-    def test_robot_rtsp_url(self):
+    def test_robot_webrtc_offer_url(self):
         self.assertEqual(
-            video_stream_url("10.30.12.111", "camera1").toString(),
-            "rtsp://10.30.12.111:8554/camera1",
+            webrtc_offer_url("10.30.12.111", "camera1"),
+            "https://10.30.12.111/api/webrtc?src=camera1",
         )
 
-    def test_ipv6_rtsp_url(self):
+    def test_ipv6_webrtc_offer_url(self):
         self.assertEqual(
-            video_stream_url("2001:db8::1", "camera2").toString(),
-            "rtsp://[2001:db8::1]:8554/camera2",
+            webrtc_offer_url("2001:db8::1", "camera2"),
+            "https://[2001:db8::1]/api/webrtc?src=camera2",
         )
 
     def test_rejects_unknown_stream(self):
         with self.assertRaises(ValueError):
-            video_stream_url("10.30.12.111", "depth")
+            webrtc_offer_url("10.30.12.111", "depth")
 
 
 if __name__ == "__main__":
